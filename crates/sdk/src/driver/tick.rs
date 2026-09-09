@@ -567,16 +567,18 @@ impl<W: SwapWallet + MaybeSend + MaybeSync + 'static> Driver<W> {
         }
 
         let end = record.endpoint(terms.side);
-        if let Status::Refund { .. } = record.status
+        if matches!(record.status, Status::Refund { .. })
             && !spendable(record, &terms, &observed, end.server_privkey.is_some()).is_empty()
-            && let Some(destination) = end.destination.clone().or_else(|| {
+        {
+            let destination = end.destination.clone().or_else(|| {
                 self.destinations
                     .as_ref()
                     .map(|d| d.refund_address(terms.chain))
-            })
-        {
-            self.refund_from(record, &terms, &script, &observed, chain, &destination)
-                .await?;
+            });
+            if let Some(destination) = destination {
+                self.refund_from(record, &terms, &script, &observed, chain, &destination)
+                    .await?;
+            }
         }
         self.core.errors.lock().unwrap().remove(&record.swap_id);
         let server = observed.server.and_then(|s| s.status);

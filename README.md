@@ -10,7 +10,7 @@ protocol.
 
 ```toml
 [dependencies]
-anyswap-sdk = { version = "1.2.0-rc.1", features = ["esplora"] }
+anyswap-sdk = { version = "1.2.0-rc.2", features = ["esplora"] }
 ```
 
 | Feature   | Default | Adds                                                          |

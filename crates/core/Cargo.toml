@@ -3,6 +3,7 @@ name = "anyswap-core"
 version.workspace = true
 license.workspace = true
 repository.workspace = true
+rust-version.workspace = true
 description = "Shared on-chain primitives and API types for AnySwap: swaps between Lightning and on-chain Bitcoin or Liquid"
 edition = "2024"
 

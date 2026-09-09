@@ -3,6 +3,7 @@ name = "anyswap-sdk"
 version.workspace = true
 license.workspace = true
 repository.workspace = true
+rust-version.workspace = true
 description = "Rust client SDK for AnySwap: swaps between Lightning and on-chain Bitcoin or Liquid, with a driver that runs them to completion"
 edition = "2024"
 

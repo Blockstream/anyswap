@@ -6,12 +6,13 @@ members = [
 resolver = "3"
 
 [workspace.package]
-version = "1.2.0-rc.1"
+version = "1.2.0-rc.2"
 license = "MIT"
 repository = "https://github.com/Blockstream/anyswap"
+rust-version = "1.85"
 
 [workspace.dependencies]
-anyswap-core = { path = "crates/core", version = "1.2.0-rc.1" }
+anyswap-core = { path = "crates/core", version = "1.2.0-rc.2" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 futures-util = "0.3"
 cln-plugin = "0.6.0"
