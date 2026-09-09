@@ -1,0 +1,36 @@
+[package]
+name = "anyswap-core"
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Shared on-chain primitives and API types for AnySwap: swaps between Lightning and on-chain Bitcoin or Liquid"
+edition = "2024"
+
+[dependencies]
+anyhow = { workspace = true }
+async-trait = { workspace = true, optional = true }
+bitcoin = { workspace = true }
+elements = { workspace = true }
+esplora-client = { workspace = true, optional = true }
+hex = { workspace = true }
+lightning-invoice = { workspace = true }
+secp256k1 = { version = "0.33.1", features = ["std", "rand"] }
+serde = { workspace = true }
+strum = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
+utoipa = { workspace = true, optional = true }
+reqwest = { workspace = true, optional = true }
+
+# The clock: wasm32 has no system time, so `utils::now` reads the browser's.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys = "0.3"
+
+[features]
+esplora = ["dep:esplora-client", "dep:reqwest", "dep:async-trait"]
+openapi = ["dep:utoipa"]
+
+[dev-dependencies]
+bitcoin = { workspace = true, features = ["bitcoinconsensus"] }
+serde_json = { workspace = true }

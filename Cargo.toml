@@ -1,0 +1,41 @@
+[workspace]
+members = [
+    "crates/core",
+    "crates/sdk",
+]
+resolver = "3"
+
+[workspace.package]
+version = "1.2.0-rc.1"
+license = "MIT"
+repository = "https://github.com/Blockstream/anyswap"
+
+[workspace.dependencies]
+anyswap-core = { path = "crates/core", version = "1.2.0-rc.1" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+futures-util = "0.3"
+cln-plugin = "0.6.0"
+cln-rpc = "0.6.0"
+anyhow = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+async-trait = "0.1"
+serde_json = "1.0"
+bitcoin = { version = "0.32", features = ["serde", "rand-std", "base64"] }
+elements = { version = "0.26.2", features = ["serde"] }
+miniscript = "12"
+thiserror = "2"
+uuid = { version = "1.23", features = ["v4", "v5", "js", "serde"] }
+bip39 = { version = "2", features = ["rand"] }
+lightning-invoice = "0.34"
+strum = { version = "0.26", features = ["derive"] }
+hex = "0.4"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+utoipa = { version = "5.5", features = ["uuid"] }
+esplora-client = { version = "0.12", default-features = false, features = ["async-https-rustls", "tokio"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+lapin = "4.10"
+rand = "0.9"
+sqlx = "0.8"
+toml = "0.9.10"
+url = "2.5"

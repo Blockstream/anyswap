@@ -1,0 +1,62 @@
+[package]
+name = "anyswap-sdk"
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Rust client SDK for AnySwap: swaps between Lightning and on-chain Bitcoin or Liquid, with a driver that runs them to completion"
+edition = "2024"
+
+[features]
+default = ["client", "ws", "driver"]
+client = ["dep:reqwest", "dep:serde", "dep:serde_json"]
+# Native only: tokio's `net` does not build on wasm32.
+ws = ["client", "dep:futures-util", "dep:tokio-tungstenite", "tokio/net"]
+esplora = ["anyswap-core/esplora"]
+driver = [
+    "client",
+    "dep:async-trait",
+    "dep:tokio",
+    "dep:js-sys",
+    "dep:wasm-bindgen",
+    "dep:wasm-bindgen-futures",
+]
+
+[dependencies]
+anyswap-core = { workspace = true }
+async-trait = { workspace = true, optional = true }
+bip39 = { workspace = true }
+bitcoin = { workspace = true }
+elements = { workspace = true }
+futures-util = { workspace = true, optional = true }
+hex = { workspace = true }
+reqwest = { workspace = true, optional = true }
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+strum = { workspace = true }
+thiserror = { workspace = true }
+# Not the workspace spec: its `rt-multi-thread` does not build on wasm32. The
+# runtime itself is native only, below, so a stray `tokio::spawn` or
+# `tokio::time` fails to compile for wasm32 instead of panicking there.
+tokio = { version = "1", default-features = false, features = ["macros", "sync"], optional = true }
+tokio-tungstenite = { version = "0.29", features = ["rustls-tls-webpki-roots"], optional = true }
+uuid = { workspace = true }
+anyhow = "1.0.104"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tokio = { version = "1", default-features = false, features = ["rt", "time"], optional = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys = { version = "0.3", optional = true }
+wasm-bindgen = { version = "0.2", optional = true }
+wasm-bindgen-futures = { version = "0.4", optional = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+
+[[example]]
+name = "swaps"
+required-features = ["esplora"]
+
+[[example]]
+name = "advance"
+required-features = ["esplora"]
