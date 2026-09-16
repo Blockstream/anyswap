@@ -51,6 +51,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tokio-tungstenite",
+ "tracing",
  "uuid",
  "wasm-bindgen",
  "wasm-bindgen-futures",

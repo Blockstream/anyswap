@@ -14,6 +14,9 @@ mod rt;
 mod server;
 mod tick;
 
+#[cfg(test)]
+mod tests;
+
 use std::{
     collections::HashMap,
     future::Future,
@@ -334,7 +337,9 @@ impl<W: SwapWallet + MaybeSend + MaybeSync + 'static> Driver<W> {
             driver.ensure_listener();
             let mut signals = driver.core.signals.subscribe();
             loop {
-                driver.sweep().await;
+                if let Err(error) = driver.sweep().await {
+                    tracing::error!(%error, "failed to list swaps");
+                }
                 tokio::select! {
                     _ = rt::sleep(driver.config.poll_interval) => {}
                     _ = signals.recv() => {}
@@ -348,10 +353,8 @@ impl<W: SwapWallet + MaybeSend + MaybeSync + 'static> Driver<W> {
         Updates(self.core.updates.subscribe())
     }
 
-    async fn sweep(&self) {
-        let Ok(records) = self.core.store.list().await else {
-            return;
-        };
+    async fn sweep(&self) -> Result<(), StoreError> {
+        let records = self.core.store.list().await?;
         let now = now();
         for record in records {
             if record.status.is_quiet(now) {
@@ -359,14 +362,25 @@ impl<W: SwapWallet + MaybeSend + MaybeSync + 'static> Driver<W> {
             }
             let id = record.swap_id;
             let _guard = self.lock(id).await;
-            let Ok(Some(mut record)) = self.core.store.load(&id).await else {
-                continue;
+            let mut record = match self.core.store.load(&id).await {
+                Ok(Some(record)) => record,
+                Ok(None) => continue,
+                Err(error) => {
+                    self.core
+                        .errors
+                        .lock()
+                        .unwrap()
+                        .insert(id, Arc::new(error.into()));
+                    self.emit(record, None);
+                    continue;
+                }
             };
             if let Err(error) = self.tick(&mut record).await {
                 self.core.errors.lock().unwrap().insert(id, Arc::new(error));
                 self.emit(record, None);
             }
         }
+        Ok(())
     }
 
     async fn adopt(

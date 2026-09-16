@@ -580,9 +580,15 @@ impl<W: SwapWallet + MaybeSend + MaybeSync + 'static> Driver<W> {
                     .await?;
             }
         }
-        self.core.errors.lock().unwrap().remove(&record.swap_id);
+        let recovered = self
+            .core
+            .errors
+            .lock()
+            .unwrap()
+            .remove(&record.swap_id)
+            .is_some();
         let server = observed.server.and_then(|s| s.status);
-        if changed {
+        if changed || recovered {
             self.emit(record.clone(), server.clone());
         }
         Ok(server)

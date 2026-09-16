@@ -125,6 +125,12 @@ sustained lag rather than blocking the driver, so treat it as a prompt to
 render, not as a ledger; `driver.get(swap_id)` returns the current state of
 any stored swap.
 
+Failed store reads for a known swap also produce an error update. When an
+error clears, the driver sends a recovery update even if the stored record
+has not changed. A failure to list the store has no swap ID to attach to:
+`run` logs it through `tracing` at error level and retries on the next pass.
+Install a tracing subscriber to observe these driver-wide storage errors.
+
 ## Driving one swap by hand
 
 Handles can pace the loop themselves, without `run`:

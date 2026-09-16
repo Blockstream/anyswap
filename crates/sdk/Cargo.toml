@@ -17,6 +17,7 @@ driver = [
     "client",
     "dep:async-trait",
     "dep:tokio",
+    "dep:tracing",
     "dep:js-sys",
     "dep:wasm-bindgen",
     "dep:wasm-bindgen-futures",
@@ -35,6 +36,7 @@ serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 strum = { workspace = true }
 thiserror = { workspace = true }
+tracing = { workspace = true, optional = true }
 # Not the workspace spec: its `rt-multi-thread` does not build on wasm32. The
 # runtime itself is native only, below, so a stray `tokio::spawn` or
 # `tokio::time` fails to compile for wasm32 instead of panicking there.
