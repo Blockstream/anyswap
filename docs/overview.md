@@ -89,6 +89,12 @@ swapped on. `with_signals` is optional: without it the loops pace on
 `poll_interval` alone. The driver is cheap to clone and every clone shares
 the store, the client, and the update stream.
 
+`HttpClient` gives each HTTP request a 30-second total timeout, including
+reading the response body. Use `client.with_request_timeout(duration)` to
+choose another bound. The timeout does not apply to WebSocket subscriptions.
+A timed-out mutation may already have reached the server; read the swap
+state before deciding whether to retry it.
+
 ## The integration shape
 
 Create swaps, spawn the loop, watch the updates:

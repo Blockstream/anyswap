@@ -43,6 +43,8 @@
 //! the CSV timeout (`AwaitRefundTxConfirmation` then `Refunded`). There is no
 //! way to abort a swap-out once its opening tx is broadcast.
 
+use std::time::Duration;
+
 use anyswap_core::{
     api::{
         CancelRequest, CreateSwapRequest, ErrorCode, InfoResponse, RevealClaimRequest,
@@ -115,6 +117,7 @@ pub struct HttpClient {
     http: reqwest::Client,
     base_url: String,
     private_key: Option<PrivateKey>,
+    request_timeout: Duration,
 }
 
 impl HttpClient {
@@ -123,7 +126,17 @@ impl HttpClient {
             http: reqwest::Client::new(),
             base_url: base_url.trim_end_matches('/').to_string(),
             private_key,
+            request_timeout: Duration::from_secs(30),
         }
+    }
+
+    /// Sets the total timeout for each HTTP request, including response body
+    /// reads. Defaults to 30 seconds. This does not time out WebSocket subscriptions.
+    /// A timed-out mutation may have reached the server; read the swap state
+    /// before deciding whether to retry it.
+    pub fn with_request_timeout(mut self, timeout: Duration) -> Self {
+        self.request_timeout = timeout;
+        self
     }
 
     pub fn set_private_key(&mut self, private_key: PrivateKey) -> &mut Self {
@@ -166,6 +179,7 @@ impl HttpClient {
         let resp = self
             .http
             .get(format!("{}/v1/info", self.base_url))
+            .timeout(self.request_timeout)
             .send()
             .await?;
         Ok(check(resp).await?.json().await?)
@@ -192,6 +206,7 @@ impl HttpClient {
         let resp = self
             .http
             .post(format!("{}{}", self.base_url, path))
+            .timeout(self.request_timeout)
             .headers(headers)
             .header(CONTENT_TYPE, "application/json")
             .body(body)
@@ -221,6 +236,7 @@ impl HttpClient {
         let resp = self
             .http
             .get(format!("{}{}", self.base_url, path))
+            .timeout(self.request_timeout)
             .headers(headers)
             .send()
             .await?;
@@ -239,6 +255,7 @@ impl HttpClient {
         let mut request = self
             .http
             .get(format!("{}{}", self.base_url, path))
+            .timeout(self.request_timeout)
             .query(query)
             .build()?;
         let target = match request.url().query() {
@@ -307,6 +324,7 @@ impl HttpClient {
         let resp = self
             .http
             .post(format!("{}{}", self.base_url, path))
+            .timeout(self.request_timeout)
             .headers(headers)
             .header(CONTENT_TYPE, "application/json")
             .body(body)
@@ -415,6 +433,75 @@ mod tests {
         path: String,
         headers: HashMap<String, String>,
         body: Vec<u8>,
+    }
+
+    async fn assert_request_timeout(endpoint: u8, send_headers: bool) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        let (release, wait) = std::sync::mpsc::channel();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            read_request(&mut stream);
+            if send_headers {
+                stream.write_all(b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 100\r\n\r\n").unwrap();
+                stream.flush().unwrap();
+            }
+            // Keep the response incomplete until the client check has finished.
+            let _ = wait.recv_timeout(Duration::from_secs(5));
+        });
+        let client = HttpClient::new(&base_url, Some(test_identity_private_key()))
+            .with_request_timeout(Duration::from_millis(100));
+        let id = Uuid::from_u128(1);
+        let request = async {
+            match endpoint {
+                0 => client.get_info().await.map(|_| ()),
+                1 => client.get_swap(id).await.map(|_| ()),
+                2 => client
+                    .list_swaps(&SwapListQuery::default())
+                    .await
+                    .map(|_| ()),
+                3 => {
+                    let req: CreateSwapRequest = serde_json::from_value(serde_json::json!({
+                        "protocol_version": "3.0.0", "swap_id": id, "user_id": "fixture",
+                        "receive_amount": 10_000, "swap_fee_limit": 1_000
+                    }))
+                    .unwrap();
+                    client.create_swap(&req).await
+                }
+                4 => {
+                    client
+                        .cancel(
+                            id,
+                            &CancelRequest {
+                                cancel_message: "fixture".into(),
+                            },
+                        )
+                        .await
+                }
+                _ => unreachable!(),
+            }
+        };
+        let result = tokio::time::timeout(Duration::from_secs(2), request).await;
+        let _ = release.send(());
+        server.join().unwrap();
+        assert!(
+            matches!(result, Ok(Err(ClientError::Transport(_)))),
+            "endpoint {endpoint}, headers {send_headers}: {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn times_out_stalled_response_headers() {
+        for endpoint in 0..5 {
+            assert_request_timeout(endpoint, false).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn times_out_stalled_response_bodies() {
+        for endpoint in 0..3 {
+            assert_request_timeout(endpoint, true).await;
+        }
     }
 
     fn test_keypair() -> Keypair {
