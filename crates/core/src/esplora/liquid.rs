@@ -1,6 +1,10 @@
 //! Liquid Esplora client and its chain-neutral [`ChainClient`] adapter.
 
-use std::{collections::HashMap, str::FromStr};
+use std::{
+    collections::HashMap,
+    str::FromStr,
+    sync::{Arc, Mutex, PoisonError},
+};
 
 use async_trait::async_trait;
 use elements::{Address, AssetId, BlockHash, Transaction, TxOut, Txid, encode};
@@ -44,6 +48,9 @@ pub struct LiquidUtxo {
 pub struct LiquidEsplora {
     client: reqwest::Client,
     base_url: String,
+    /// Bodies already fetched, by txid. A body never changes under its txid,
+    /// so a history read fetches only what it has not seen. Clones share it.
+    txs: Arc<Mutex<HashMap<Txid, Transaction>>>,
 }
 
 impl LiquidEsplora {
@@ -51,6 +58,7 @@ impl LiquidEsplora {
         Self {
             client: reqwest::Client::new(),
             base_url: url.trim_end_matches('/').to_owned(),
+            txs: Arc::default(),
         }
     }
 
@@ -225,11 +233,38 @@ impl LiquidEsplora {
     }
 
     /// Every transaction touching `address` with its confirmation height,
-    /// newest first, paged to the end.
+    /// newest first, paged to the end. Bodies are fetched once and kept; an
+    /// entry whose body the explorer no longer serves is skipped.
     pub async fn address_txs(
         &self,
         address: &Address,
-    ) -> Result<Vec<(Txid, Option<u32>)>, EsploraError> {
+    ) -> Result<Vec<(Transaction, Option<u32>)>, EsploraError> {
+        let history = self.history(address).await?;
+        let missing: Vec<Txid> = {
+            let txs = self.txs.lock().unwrap_or_else(PoisonError::into_inner);
+            history
+                .iter()
+                .map(|(txid, _)| *txid)
+                .filter(|txid| !txs.contains_key(txid))
+                .collect()
+        };
+        let mut fetched = Vec::with_capacity(missing.len());
+        for txid in missing {
+            if let Some(tx) = self.get_tx(&txid).await? {
+                fetched.push((txid, tx));
+            }
+        }
+        let mut txs = self.txs.lock().unwrap_or_else(PoisonError::into_inner);
+        txs.extend(fetched);
+        Ok(history
+            .into_iter()
+            .filter_map(|(txid, height)| txs.get(&txid).cloned().map(|tx| (tx, height)))
+            .collect())
+    }
+
+    /// Txid and confirmation height of every transaction touching `address`,
+    /// newest first, paged to the end.
+    async fn history(&self, address: &Address) -> Result<Vec<(Txid, Option<u32>)>, EsploraError> {
         #[derive(Deserialize)]
         struct ApiTx {
             txid: Txid,

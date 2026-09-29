@@ -33,7 +33,8 @@ use crate::{
 const LIGHTNING_BLOCK_TIME: u64 = 600;
 
 /// `GET /v1/info` reduced to two ends and one amount, with the `quote_id`
-/// that locks it. An end is Lightning when its chain is `None`.
+/// that locks it. An end is Lightning when its chain is `None`. Both amounts
+/// are binding: the request carries them as they are here.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Quote {
     pub source_chain: Option<Chain>,
@@ -50,13 +51,22 @@ pub struct Quote {
     pub(crate) protocol_version: String,
 }
 
+/// Which end of a quote the caller pins: the amount they receive, or the
+/// amount they spend.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TargetAmount {
+    Receive(u64),
+    Send(u64),
+}
+
 pub(crate) fn quote(
     info: InfoResponse,
     network: SwapNetwork,
     policy_asset: Option<AssetId>,
     source: Option<Chain>,
     dest: Option<Chain>,
-    receive_amount: u64,
+    target: TargetAmount,
     now: Timestamp,
 ) -> Result<Quote, DriverError> {
     if info.policy.network != network {
@@ -111,14 +121,27 @@ pub(crate) fn quote(
         ),
     };
     let min = min.max(base_fee.saturating_mul(policy.min_base_fee_multiplier));
+    let min_send = |amount| fee::min_send_for_receive(amount, service_ppm, base_fee);
+    let out_of_range = || match target {
+        TargetAmount::Receive(_) => DriverError::AmountOutOfRange { min, max },
+        TargetAmount::Send(_) => DriverError::AmountOutOfRange {
+            min: min_send(min).unwrap_or(u64::MAX),
+            max: max
+                .checked_add(1)
+                .and_then(min_send)
+                .map_or(u64::MAX, |next| next - 1),
+        },
+    };
+    let (receive_amount, send_amount) = match target {
+        TargetAmount::Receive(amount) => (amount, min_send(amount).ok_or_else(out_of_range)?),
+        TargetAmount::Send(amount) => (
+            fee::max_receive_for_send(amount, service_ppm, base_fee).ok_or_else(out_of_range)?,
+            amount,
+        ),
+    };
     if receive_amount < min || receive_amount > max {
-        return Err(DriverError::AmountOutOfRange { min, max });
+        return Err(out_of_range());
     }
-    let service_fee = fee::service_fee(receive_amount, service_ppm);
-    let fee = base_fee.saturating_add(service_fee);
-    let send_amount = receive_amount
-        .checked_add(fee)
-        .ok_or(DriverError::AmountOutOfRange { min, max })?;
     let (source_asset_id, dest_asset_id) = match side {
         Side::Source => (Some(asset), None),
         Side::Dest => (None, Some(asset)),
@@ -131,8 +154,8 @@ pub(crate) fn quote(
         receive_amount,
         send_amount,
         base_fee,
-        service_fee,
-        fee,
+        service_fee: send_amount - receive_amount - base_fee,
+        fee: send_amount - receive_amount,
         quote_id,
         expires_at: now + info.quote_ttl,
         protocol_version: info.policy.protocol_version,
@@ -331,21 +354,18 @@ fn common(req: &CreateSwapRequest, side: Side, state: &SwapState) -> Result<(), 
             found: state.receive_amount,
         });
     }
-    let fee = state.base_fee.checked_add(state.service_fee);
-    let send_amount = fee.and_then(|fee| state.receive_amount.checked_add(fee));
-    if send_amount != Some(state.send_amount) {
+    // Both amounts are ours by signature; the server's breakdown of the spread
+    // between them only has to add up.
+    let spread = state.base_fee.checked_add(state.service_fee);
+    if state.send_amount != req.send_amount
+        || spread != state.send_amount.checked_sub(state.receive_amount)
+    {
         return Err(Refusal::SendAmount {
-            send_amount: state.send_amount,
+            expected: req.send_amount,
+            found: state.send_amount,
             receive_amount: state.receive_amount,
             base_fee: state.base_fee,
             service_fee: state.service_fee,
-        });
-    }
-    let fee = fee.unwrap_or(u64::MAX);
-    if fee > req.swap_fee_limit {
-        return Err(Refusal::FeeAboveLimit {
-            fee,
-            limit: req.swap_fee_limit,
         });
     }
     Ok(())
@@ -430,7 +450,7 @@ fn reported(state: &SwapState, user_id: String) -> Result<CreateSwapRequest, Ref
         dest_chain: None,
         dest_asset_id: None,
         receive_amount: state.receive_amount,
-        swap_fee_limit: state.swap_fee_limit,
+        send_amount: state.send_amount,
         quote_id: None,
         claim_invoice: None,
         source_refund_pubkey: None,
@@ -561,5 +581,201 @@ impl<W: SwapWallet + MaybeSend + MaybeSync + 'static> Driver<W> {
             }
         }
         Ok(report)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    fn info() -> InfoResponse {
+        serde_json::from_value(json!({
+            "online": true,
+            "policy": {
+                "protocol_version": "1",
+                "network": "regtest",
+                "invoice_expiry": 3600,
+                "chain": {
+                    "bitcoin": {
+                        "source_csv": 144,
+                        "dest_csv": 144,
+                        "confs": 1,
+                        "block_time": 600,
+                        "timeouts": {
+                            "await_opening_tx": 3600,
+                            "await_claim_key_reveal_message": 600,
+                        },
+                        "service_ppm": 4_000,
+                        "min_base_fee_multiplier": 6,
+                        "asset": {
+                            "native": {
+                                "asset_id": NATIVE_ASSET,
+                                "min_amount": 10_000,
+                                "max_amount": 1_000_000,
+                            },
+                        },
+                    },
+                },
+                "lightning": {
+                    "min_amount": 10_000,
+                    "max_amount": 1_000_000,
+                    "service_ppm": 2_000,
+                },
+            },
+            "fee_estimates": { "bitcoin": { "source": 1_000, "dest": 2_000 } },
+            "quote_id": Uuid::from_u128(7),
+            "quote_ttl": 60,
+        }))
+        .unwrap()
+    }
+
+    fn swap_out_quote(target: TargetAmount) -> Result<Quote, DriverError> {
+        quote(
+            info(),
+            SwapNetwork::Regtest,
+            None,
+            None,
+            Some(Chain::Bitcoin),
+            target,
+            0,
+        )
+    }
+
+    fn request(send_amount: u64) -> CreateSwapRequest {
+        serde_json::from_value(json!({
+            "protocol_version": "1",
+            "swap_id": Uuid::from_u128(1),
+            "user_id": "user",
+            "dest_chain": "bitcoin",
+            "dest_asset_id": NATIVE_ASSET,
+            "receive_amount": 250_001,
+            "send_amount": send_amount,
+        }))
+        .unwrap()
+    }
+
+    fn state(send_amount: u64, service_fee: u64) -> SwapState {
+        serde_json::from_value(json!({
+            "protocol_version": "1",
+            "swap_id": Uuid::from_u128(1),
+            "swap_type": "SwapOut",
+            "status": "AwaitClaimInvoicePay",
+            "receive_amount": 250_001,
+            "send_amount": send_amount,
+            "base_fee": 2_000,
+            "service_fee": service_fee,
+            "payment_hash": "00".repeat(32),
+            "transitioned_at": 0,
+            "created_at": 0,
+            "dest_chain": "bitcoin",
+            "dest_asset": NATIVE_ASSET,
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn quote_prices_either_end_as_the_server_accepts_it() {
+        for target in [
+            TargetAmount::Receive(250_000),
+            TargetAmount::Receive(249_999),
+            TargetAmount::Send(253_001),
+            TargetAmount::Send(252_999),
+        ] {
+            let q = swap_out_quote(target).expect("in range");
+            let price = |amount| fee::min_send_for_receive(amount, 4_000, 2_000).unwrap();
+            assert!(price(q.receive_amount) <= q.send_amount, "{target:?}");
+            assert!(q.send_amount < price(q.receive_amount + 1), "{target:?}");
+            assert_eq!(q.fee, q.send_amount - q.receive_amount, "{target:?}");
+            assert_eq!(q.base_fee + q.service_fee, q.fee, "{target:?}");
+        }
+    }
+
+    #[test]
+    fn quote_pinned_by_the_send_amount_keeps_the_rounding_satoshi() {
+        let q = swap_out_quote(TargetAmount::Send(252_999)).unwrap();
+        assert_eq!(
+            (q.receive_amount, q.send_amount, q.base_fee, q.service_fee),
+            (249_999, 252_999, 2_000, 1_000)
+        );
+    }
+
+    #[test]
+    fn quote_reports_the_range_in_the_pinned_end() {
+        for target in [
+            TargetAmount::Receive(11_999),
+            TargetAmount::Receive(1_000_001),
+        ] {
+            assert!(matches!(
+                swap_out_quote(target),
+                Err(DriverError::AmountOutOfRange {
+                    min: 12_000,
+                    max: 1_000_000
+                })
+            ));
+        }
+        for target in [
+            TargetAmount::Send(1_999),
+            TargetAmount::Send(14_047),
+            TargetAmount::Send(1_006_001),
+        ] {
+            assert!(matches!(
+                swap_out_quote(target),
+                Err(DriverError::AmountOutOfRange {
+                    min: 14_048,
+                    max: 1_006_000
+                })
+            ));
+        }
+        assert_eq!(
+            swap_out_quote(TargetAmount::Send(14_048))
+                .unwrap()
+                .receive_amount,
+            12_000
+        );
+        assert_eq!(
+            swap_out_quote(TargetAmount::Send(1_006_000))
+                .unwrap()
+                .receive_amount,
+            1_000_000
+        );
+    }
+
+    #[test]
+    fn target_amount_reads_the_wasm_shape() {
+        assert_eq!(
+            serde_json::from_value::<TargetAmount>(json!({ "receive": 5 })).unwrap(),
+            TargetAmount::Receive(5)
+        );
+        assert_eq!(
+            serde_json::from_value::<TargetAmount>(json!({ "send": 5 })).unwrap(),
+            TargetAmount::Send(5)
+        );
+    }
+
+    #[test]
+    fn common_accepts_a_breakdown_of_our_send_amount() {
+        assert_eq!(
+            common(&request(253_001), Side::Dest, &state(253_001, 1_000)),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn common_refuses_a_send_amount_that_is_not_ours_or_does_not_add_up() {
+        for (send_amount, service_fee) in [(253_002, 1_001), (253_001, 999)] {
+            assert!(matches!(
+                common(
+                    &request(253_001),
+                    Side::Dest,
+                    &state(send_amount, service_fee)
+                ),
+                Err(Refusal::SendAmount {
+                    expected: 253_001,
+                    ..
+                })
+            ));
+        }
     }
 }

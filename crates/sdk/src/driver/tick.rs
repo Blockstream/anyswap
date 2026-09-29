@@ -253,7 +253,9 @@ pub enum Spend {
         path: Path,
         fee_rate: f64,
     },
-    Rebroadcast(String),
+    /// Resend an observed spend that is still unconfirmed. The backend already
+    /// holds it, so a refused resend is not an error.
+    Rebroadcast { txid: String, tx_hex: String },
 }
 
 #[derive(Clone, Debug)]
@@ -397,7 +399,10 @@ fn swap_out(
             };
             match spend.height {
                 None => act(
-                    Action::Spend(Spend::Rebroadcast(spend.tx_hex.clone())),
+                    Action::Spend(Spend::Rebroadcast {
+                        txid: spend.txid.clone(),
+                        tx_hex: spend.tx_hex.clone(),
+                    }),
                     status,
                 ),
                 Some(_) => hold(status),
@@ -693,7 +698,10 @@ impl<W: SwapWallet + MaybeSend + MaybeSync + 'static> Driver<W> {
         chain: &Registered,
     ) -> Result<String, DriverError> {
         let tx_hex = match spend {
-            Spend::Rebroadcast(tx_hex) => tx_hex,
+            Spend::Rebroadcast { txid, tx_hex } => {
+                let _ = chain.client.broadcast(&tx_hex).await;
+                return Ok(txid);
+            }
             Spend::Claim {
                 utxos,
                 path,
@@ -1022,7 +1030,6 @@ mod tests {
             "send_amount": 0,
             "base_fee": 0,
             "service_fee": 0,
-            "swap_fee_limit": 0,
             "payment_hash": hex::encode(r.payment_hash),
             "transitioned_at": 0,
             "created_at": 0,
@@ -1274,7 +1281,7 @@ mod tests {
         let d = decide_in(&r, &observed(110, vec![opening.clone()]));
         assert!(matches!(
             d.action,
-            Some(Action::Spend(Spend::Rebroadcast(_)))
+            Some(Action::Spend(Spend::Rebroadcast { .. }))
         ));
         assert!(matches!(d.status, Status::Spending { confs: 0, .. }));
 

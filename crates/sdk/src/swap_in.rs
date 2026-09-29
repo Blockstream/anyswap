@@ -103,7 +103,6 @@ pub struct SwapIn {
     pub send_amount: u64,
     pub base_fee: u64,
     pub service_fee: u64,
-    pub swap_fee_limit: u64,
     pub payment_hash: [u8; 32],
     pub csv: u32,
     /// User's pubkey in the swap script (refund side).
@@ -400,7 +399,6 @@ impl TryFrom<SwapState> for SwapIn {
             send_amount: s.send_amount,
             base_fee: s.base_fee,
             service_fee: s.service_fee,
-            swap_fee_limit: s.swap_fee_limit,
             payment_hash: codec::parse_hash32(&s.payment_hash)?,
             csv: require(s.source_csv, "source_csv")?,
             refund_pubkey: codec::parse_pubkey(&require(
@@ -482,7 +480,6 @@ mod tests {
             send_amount: 101_000,
             base_fee: 1_000,
             service_fee: 0,
-            swap_fee_limit: 2_000,
             payment_hash: sha256::Hash::hash(&preimage).to_byte_array(),
             csv: 144,
             refund_pubkey: ctx.wallet().pubkey(&swap_id).unwrap(),

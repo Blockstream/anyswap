@@ -125,16 +125,15 @@ mod esplora {
         async fn address_history(&self, address: &str) -> Result<Vec<HistoryTx>, ChainError> {
             let address =
                 elements::Address::from_str(address).map_err(|e| invalid("address", e))?;
-            let mut history = Vec::new();
-            for (txid, height) in self.address_txs(&address).await? {
-                if let Some(tx) = self.get_tx(&txid).await? {
-                    history.push(HistoryTx {
-                        hex: hex::encode(elements::encode::serialize(&tx)),
-                        height,
-                    });
-                }
-            }
-            Ok(history)
+            Ok(self
+                .address_txs(&address)
+                .await?
+                .into_iter()
+                .map(|(tx, height)| HistoryTx {
+                    hex: hex::encode(elements::encode::serialize(&tx)),
+                    height,
+                })
+                .collect())
         }
 
         async fn broadcast(&self, tx_hex: &str) -> Result<String, ChainError> {

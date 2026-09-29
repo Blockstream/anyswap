@@ -1,6 +1,5 @@
 target/
 .cargo/*
-crates/sdk-py/.cargo
 crates/sdk/.cargo
 crates/core/.cargo
 crates/sdk-wasm/.cargo
@@ -9,17 +8,16 @@ crates/sdk-wasm/pkg
 
 .idea/*
 .tests
-.uv-cache/
 .bin-cache/
 .cln-cache/
 
 .env
 .env.*
-!.env.regtest
+!deploy/regtest/.env
+!deploy/regtest/integrator/.env
 dev.db
 .ci.db
 identifier.sqlite
-__pycache__/
 .sqlx/
 
 .DS_Store

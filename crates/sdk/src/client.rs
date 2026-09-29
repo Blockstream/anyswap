@@ -577,7 +577,7 @@ mod tests {
             dest_chain: None,
             dest_asset_id: None,
             receive_amount: 10_000,
-            swap_fee_limit: 1_000,
+            send_amount: 11_000,
             quote_id: None,
             claim_invoice: Some("lnbc1test".to_string()),
             source_refund_pubkey: Some(hex::encode(pubkey.serialize())),

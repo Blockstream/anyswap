@@ -26,7 +26,9 @@ use anyswap_sdk::{
     bitcoin::PrivateKey,
     client::HttpClient,
     context::SwapContext,
-    driver::{ChainConfig, Driver, Handle, Status, StoreError, SwapRecord, SwapStore},
+    driver::{
+        ChainConfig, Driver, Handle, Status, StoreError, SwapRecord, SwapStore, TargetAmount,
+    },
     esplora::BitcoinEsplora,
     invoice,
     types::{Chain, SwapNetwork},
@@ -152,7 +154,11 @@ async fn main() -> anyhow::Result<()> {
         ["in", bolt11, refund_address] => {
             let receive_amount = invoice::amount_msat(bolt11)? / 1000;
             let quote = driver
-                .quote(Some(Chain::Bitcoin), None, receive_amount)
+                .quote(
+                    Some(Chain::Bitcoin),
+                    None,
+                    TargetAmount::Receive(receive_amount),
+                )
                 .await?;
             let mut swap = driver
                 .swap_in(quote, bolt11.to_owned(), Some(refund_address.to_owned()))
@@ -167,7 +173,11 @@ async fn main() -> anyhow::Result<()> {
         }
         ["out", sats, claim_address] => {
             let quote = driver
-                .quote(None, Some(Chain::Bitcoin), sats.parse()?)
+                .quote(
+                    None,
+                    Some(Chain::Bitcoin),
+                    TargetAmount::Receive(sats.parse()?),
+                )
                 .await?;
             let mut swap = driver
                 .swap_out(quote, Some(claim_address.to_owned()))

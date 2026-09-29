@@ -54,12 +54,6 @@ pub enum SwapOutError {
     #[error("opening output value {found_sat} sat does not match expected {expected_sat} sat")]
     AmountMismatch { expected_sat: u64, found_sat: u64 },
 
-    #[error("server swap fee {swap_fee_sat} sat exceeds agreed limit {swap_fee_limit_sat} sat")]
-    SwapFeeExceedsLimit {
-        swap_fee_sat: u64,
-        swap_fee_limit_sat: u64,
-    },
-
     #[error("this client is not set up for Liquid; add the Liquid parameters to the context")]
     LiquidNotConfigured,
 
@@ -113,7 +107,6 @@ pub struct SwapOut {
     pub send_amount: u64,
     pub base_fee: u64,
     pub service_fee: u64,
-    pub swap_fee_limit: u64,
     pub payment_hash: [u8; 32],
     pub csv: u32,
     /// User's pubkey in the swap script (claim side).
@@ -242,13 +235,6 @@ impl SwapOut {
             });
         }
         let (prevout, value) = self.script(ctx)?.output_at(&tx, outpoint.vout)?;
-        let swap_fee = self.base_fee.saturating_add(self.service_fee);
-        if swap_fee > self.swap_fee_limit {
-            return Err(SwapOutError::SwapFeeExceedsLimit {
-                swap_fee_sat: swap_fee,
-                swap_fee_limit_sat: self.swap_fee_limit,
-            });
-        }
         if value != self.receive_amount {
             return Err(SwapOutError::AmountMismatch {
                 expected_sat: self.receive_amount,
@@ -414,7 +400,6 @@ impl TryFrom<SwapState> for SwapOut {
             send_amount: s.send_amount,
             base_fee: s.base_fee,
             service_fee: s.service_fee,
-            swap_fee_limit: s.swap_fee_limit,
             payment_hash: codec::parse_hash32(&s.payment_hash)?,
             csv: require(s.dest_csv, "dest_csv")?,
             claim_pubkey: codec::parse_pubkey(&require(s.dest_claim_pubkey, "dest_claim_pubkey")?)?,
@@ -484,7 +469,6 @@ mod tests {
             send_amount: 101_000,
             base_fee: 1_000,
             service_fee: 0,
-            swap_fee_limit: 2_000,
             payment_hash: sha256::Hash::hash(&preimage).to_byte_array(),
             csv: 144,
             claim_pubkey: ctx.wallet().pubkey(&swap_id).unwrap(),
@@ -550,21 +534,6 @@ mod tests {
         assert!(matches!(
             swap.verify_opening(&ctx, &tx_hex),
             Err(SwapOutError::UnexpectedTxid { .. })
-        ));
-    }
-
-    #[test]
-    fn verify_opening_rejects_a_fee_above_the_agreed_limit() {
-        let ctx = context();
-        let (mut swap, tx_hex) = opening(&ctx, 100_000);
-        swap.base_fee = 3_000;
-
-        assert!(matches!(
-            swap.verify_opening(&ctx, &tx_hex),
-            Err(SwapOutError::SwapFeeExceedsLimit {
-                swap_fee_sat: 3_000,
-                swap_fee_limit_sat: 2_000,
-            })
         ));
     }
 

@@ -236,6 +236,6 @@ pub(crate) mod fixtures {
     }
 
     pub(crate) fn genesis_hash() -> String {
-        BlockHash::from_raw_hash(bitcoin::hashes::Hash::from_byte_array([8; 32])).to_string()
+        BlockHash::from_byte_array([8; 32]).to_string()
     }
 }

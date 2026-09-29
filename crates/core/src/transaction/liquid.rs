@@ -16,7 +16,6 @@ use elements::{
     Transaction, TxIn, TxInWitness, TxOut, TxOutSecrets,
     confidential::{Asset, AssetBlindingFactor, Value, ValueBlindingFactor},
     encode,
-    hashes::Hash,
     issuance::AssetId,
     secp256k1_zkp::{Keypair, Message, Secp256k1},
     sighash::{Prevouts, SighashCache},
@@ -69,7 +68,7 @@ pub fn spend_by_keypath(
         );
         if estimate {
             for txin in &mut tx.input {
-                txin.witness.script_witness.push(DUMMY_SCHNORR_SIG.to_vec());
+                txin.witness.script_witness.push(DUMMY_SCHNORR_SIG);
             }
         } else {
             let sighashes = keypath_sighashes(&tx, &prevouts, genesis_hash)?;
@@ -135,8 +134,8 @@ pub fn claim_by_preimage(
         for (i, sig) in sigs.into_iter().enumerate() {
             let witness = &mut tx.input[i].witness.script_witness;
             witness.push(sig);
-            witness.push(witness_preimage.to_vec());
-            witness.push(script.claim_script().as_bytes().to_vec());
+            witness.push(witness_preimage);
+            witness.push(script.claim_script().as_bytes());
             witness.push(control_block.clone());
         }
         Ok(tx)
@@ -186,7 +185,7 @@ pub fn refund_by_csv(
         for (i, sig) in sigs.into_iter().enumerate() {
             let witness = &mut tx.input[i].witness.script_witness;
             witness.push(sig);
-            witness.push(script.refund_script().as_bytes().to_vec());
+            witness.push(script.refund_script().as_bytes());
             witness.push(control_block.clone());
         }
         Ok(tx)
@@ -477,8 +476,8 @@ fn validate_final_transaction(
             || !input.script_sig.is_empty()
             || input.sequence != expected_sequence
             || !input.asset_issuance.is_null()
-            || input.witness.amount_rangeproof.is_some()
-            || input.witness.inflation_keys_rangeproof.is_some()
+            || !input.witness.amount_rangeproof.is_empty()
+            || !input.witness.inflation_keys_rangeproof.is_empty()
             || !input.witness.pegin_witness.is_empty()
         {
             return Err(invalid("unexpected input fields"));
@@ -487,7 +486,7 @@ fn validate_final_transaction(
             || input
                 .witness
                 .script_witness
-                .first()
+                .get(0)
                 .is_none_or(|signature| signature.len() != 64)
         {
             return Err(invalid("unexpected taproot witness"));
@@ -499,8 +498,8 @@ fn validate_final_transaction(
         || !destination_output.asset.is_confidential()
         || !destination_output.value.is_confidential()
         || !destination_output.nonce.is_confidential()
-        || destination_output.witness.surjection_proof.is_none()
-        || destination_output.witness.rangeproof.is_none()
+        || destination_output.witness.surjection_proof.is_empty()
+        || destination_output.witness.rangeproof.is_empty()
     {
         return Err(invalid("invalid confidential destination output"));
     }
@@ -584,7 +583,6 @@ pub fn extract_preimage_at(
         .witness
         .script_witness
         .get(1)?
-        .as_slice()
         .try_into()
         .ok()?;
     (crate::utils::sha256_payment_hash(&preimage) == *payment_hash).then_some(preimage)
@@ -923,7 +921,7 @@ mod tests {
             Some(fixture.preimage)
         );
         assert_eq!(
-            tx.input[0].witness.script_witness[2],
+            &tx.input[0].witness.script_witness[2],
             fixture.script.claim_script().as_bytes()
         );
         let sighash = SighashCache::new(&tx)
@@ -972,7 +970,7 @@ mod tests {
             Sequence::from_consensus(fixture.script.csv_blocks())
         );
         assert_eq!(
-            tx.input[0].witness.script_witness[1],
+            &tx.input[0].witness.script_witness[1],
             fixture.script.refund_script().as_bytes()
         );
     }

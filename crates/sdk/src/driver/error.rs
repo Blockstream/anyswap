@@ -107,16 +107,16 @@ pub enum Refusal {
     #[error("receive amount {found}, asked {expected}")]
     ReceiveAmount { expected: u64, found: u64 },
 
-    #[error("send amount {send_amount} is not {receive_amount} + {base_fee} + {service_fee}")]
+    #[error(
+        "send amount {found} as {receive_amount} + {base_fee} + {service_fee}, asked {expected}"
+    )]
     SendAmount {
-        send_amount: u64,
+        expected: u64,
+        found: u64,
         receive_amount: u64,
         base_fee: u64,
         service_fee: u64,
     },
-
-    #[error("fee {fee} above the limit {limit}")]
-    FeeAboveLimit { fee: u64, limit: u64 },
 
     #[error("script: {0}")]
     Script(String),

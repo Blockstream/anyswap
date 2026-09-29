@@ -123,7 +123,7 @@ pub struct CreateSwapRequest {
     pub dest_chain: Option<Chain>,
     pub dest_asset_id: Option<String>,
     pub receive_amount: u64,
-    pub swap_fee_limit: u64,
+    pub send_amount: u64,
     /// Optional `GET /v1/info` quote locking the base fee.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub quote_id: Option<Uuid>,
@@ -167,7 +167,6 @@ pub struct SwapState {
     pub send_amount: u64,
     pub base_fee: u64,
     pub service_fee: u64,
-    pub swap_fee_limit: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "openapi", schema(ignore))]
     pub invoice_fee: Option<u64>,
@@ -472,7 +471,6 @@ mod tests {
             send_amount: 101_000,
             base_fee: 1_000,
             service_fee: 0,
-            swap_fee_limit: 2_000,
             invoice_fee: Some(10),
             opening_tx_fee: Some(20),
             claim_tx_fee: Some(30),

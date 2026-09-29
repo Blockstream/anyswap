@@ -54,7 +54,7 @@ when the server cooperates and the CSV path when it does not.
 | With Boltz                                                    | With `anyswap-sdk`                                           |
 |---------------------------------------------------------------|--------------------------------------------------------------|
 | `BoltzApiClientV2` / `BoltzSession`                           | `HttpClient` and `Driver`                                    |
-| Pair info and limits                                          | `driver.quote(source, dest, receive_amount)`             |
+| Pair info and limits                                          | `driver.quote(source, dest, TargetAmount::Receive(amount))` |
 | A keypair and preimage you create and rotate per swap         | derived by `Wallet` from the mnemonic and the swap's id, internal to the driver |
 | `next_index_to_use`, the key counter you persist              | nothing, keys need no counter                                |
 | WebSocket status events driving your state machine            | `Status` resolved from the chain every pass; the server's label is `server_status()`, display only |

@@ -4,17 +4,21 @@
 
 Every swap starts from a quote: one read of the server's terms for a source,
 a destination, and one amount. An end is a chain, or `None` for Lightning.
+The amount pins either end: what the user receives, or what they spend.
 
 ```rust
-let quote = driver.quote(Some(Chain::Bitcoin), None, 100_000).await?;
+let quote = driver.quote(Some(Chain::Bitcoin), None, TargetAmount::Receive(100_000)).await?;
+let quote = driver.quote(Some(Chain::Bitcoin), None, TargetAmount::Send(100_000)).await?;
 ```
 
 `Quote` carries the full price: `send_amount` is `receive_amount` plus
 `fee`, split into `base_fee` (the server's on-chain costs at current fee
-rates) and `service_fee` (proportional). Its `quote_id` pins the base fee,
-so the price cannot move between quoting and creating; a quote older than
-`expires_at` is refused and you fetch a new one. Show the quote to the user,
-create the swap when they accept.
+rates) and `service_fee` (proportional, plus any satoshi rounding leaves).
+Pinned by what the user spends, the receive amount is inverted from the send
+amount. Both amounts are what the swap is created with. Its `quote_id` pins
+the base fee, so the price cannot move between quoting and creating; a quote
+older than `expires_at` is refused and you fetch a new one. Show the quote
+to the user, create the swap when they accept.
 
 ## SwapIn: on-chain to Lightning
 

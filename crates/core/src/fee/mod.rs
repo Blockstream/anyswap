@@ -1,7 +1,6 @@
-//! Swap pricing. [`swap_fee`] and [`service_fee`] are chain-neutral arithmetic;
-//! [`base_fee`] is the on-chain estimate and dispatches by [`Chain`], since the
-//! transactions a swap broadcasts differ per chain. The Bitcoin estimate is in
-//! [`bitcoin`], with Liquid to follow in [`liquid`].
+//! Swap pricing. The amount arithmetic is chain-neutral; on-chain fees
+//! dispatch by [`Chain`], since the transactions a swap broadcasts differ per
+//! chain.
 
 use crate::types::{Chain, SwapType};
 
@@ -18,6 +17,18 @@ pub fn swap_fee(receive_amount: u64, service_ppm: u64, base_fee: u64) -> u64 {
 /// `u64::MAX`.
 pub fn service_fee(receive_amount: u64, service_ppm: u64) -> u64 {
     (receive_amount as u128 * service_ppm as u128 / 1_000_000).min(u64::MAX as u128) as u64
+}
+
+/// The least the user must send to receive `receive_amount`.
+pub fn min_send_for_receive(receive_amount: u64, service_ppm: u64, base_fee: u64) -> Option<u64> {
+    receive_amount.checked_add(swap_fee(receive_amount, service_ppm, base_fee))
+}
+
+/// The most the user can receive for `send_amount`.
+pub fn max_receive_for_send(send_amount: u64, service_ppm: u64, base_fee: u64) -> Option<u64> {
+    let net = send_amount.checked_sub(base_fee)? as u128;
+    // The largest `r` with `r + r * service_ppm / 1_000_000 <= net`, the fee floored.
+    Some((((net + 1) * 1_000_000 - 1) / (1_000_000 + service_ppm as u128)) as u64)
 }
 
 /// Estimated on-chain base fee for the transactions a swap of `swap_type`
@@ -69,6 +80,47 @@ mod tests {
         assert_eq!(service_fee(999_999, 1), 0);
         assert_eq!(service_fee(1_000_000, 1), 1);
         assert_eq!(service_fee(u64::MAX, u64::MAX), u64::MAX);
+    }
+
+    #[test]
+    fn max_receive_for_send_is_the_largest_that_fits() {
+        for (send, ppm, base) in [
+            (1_000_000, 0, 0),
+            (253_000, 4_000, 2_000),
+            (253_001, 4_000, 2_000),
+            (2_250, 4_000, 2_000),
+            (1, 10_000, 0),
+            (2_000, 1_000, 2_000),
+            (13_171_977_363_711, 123_456, 0),
+        ] {
+            let receive = max_receive_for_send(send, ppm, base).expect("covers the base fee");
+            let spent = receive + swap_fee(receive, ppm, base);
+            assert!(spent <= send, "{send}/{ppm}/{base} spends {spent}");
+            assert!(
+                receive + 1 + swap_fee(receive + 1, ppm, base) > send,
+                "{send}/{ppm}/{base} leaves room for one more"
+            );
+            assert!(
+                send - spent <= 1,
+                "{send}/{ppm}/{base} leaves {}",
+                send - spent
+            );
+        }
+    }
+
+    #[test]
+    fn max_receive_for_send_inverts_the_worked_example() {
+        assert_eq!(swap_fee(250_000, 4_000, 2_000), 3_000);
+        assert_eq!(min_send_for_receive(250_000, 4_000, 2_000), Some(253_000));
+        assert_eq!(max_receive_for_send(253_000, 4_000, 2_000), Some(250_000));
+        assert_eq!(max_receive_for_send(2_000, 4_000, 2_000), Some(0));
+        assert_eq!(max_receive_for_send(1_999, 4_000, 2_000), None);
+    }
+
+    #[test]
+    fn min_send_for_receive_overflows_to_none() {
+        assert_eq!(min_send_for_receive(u64::MAX, 0, 1), None);
+        assert_eq!(min_send_for_receive(1, 1_000_000, u64::MAX), None);
     }
 
     #[test]

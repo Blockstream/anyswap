@@ -33,7 +33,7 @@ use uuid::Uuid;
 
 use self::tick::ServerStatus as Reported;
 pub use self::{
-    accept::{Quote, RestoreReport},
+    accept::{Quote, RestoreReport, TargetAmount},
     chain::{ChainClient, ChainError, HistoryTx},
     config::{ChainConfig, Config},
     error::{DriverError, Refusal},
@@ -173,12 +173,14 @@ impl<W: SwapWallet + MaybeSend + MaybeSync + 'static> Driver<W> {
     }
 
     /// A quote for a swap from `source` to `dest`, an end being Lightning
-    /// when its chain is `None`.
+    /// when its chain is `None`, pinned by the amount the user receives or
+    /// the amount they spend. Pinned by what they spend, the terms are
+    /// inverted against the one read of `/v1/info` the quote comes from.
     pub async fn quote(
         &self,
         source: Option<Chain>,
         dest: Option<Chain>,
-        receive_amount: u64,
+        target: TargetAmount,
     ) -> Result<Quote, DriverError> {
         for chain in [source, dest].into_iter().flatten() {
             self.chain(chain)?;
@@ -191,7 +193,7 @@ impl<W: SwapWallet + MaybeSend + MaybeSync + 'static> Driver<W> {
             policy_asset,
             source,
             dest,
-            receive_amount,
+            target,
             now(),
         )
     }
@@ -234,7 +236,7 @@ impl<W: SwapWallet + MaybeSend + MaybeSync + 'static> Driver<W> {
             dest_chain: quote.dest_chain,
             dest_asset_id: quote.dest_asset_id,
             receive_amount: quote.receive_amount,
-            swap_fee_limit: quote.fee,
+            send_amount: quote.send_amount,
             quote_id: Some(quote.quote_id),
             claim_invoice: Some(claim_invoice),
             source_refund_pubkey: Some(wallet.pubkey(&swap_id).map_err(wallet_error)?.to_string()),
@@ -292,7 +294,7 @@ impl<W: SwapWallet + MaybeSend + MaybeSync + 'static> Driver<W> {
             dest_chain: quote.dest_chain,
             dest_asset_id: quote.dest_asset_id,
             receive_amount: quote.receive_amount,
-            swap_fee_limit: quote.fee,
+            send_amount: quote.send_amount,
             quote_id: Some(quote.quote_id),
             claim_invoice: None,
             source_refund_pubkey: None,

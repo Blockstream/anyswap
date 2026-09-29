@@ -21,7 +21,7 @@ use anyswap_sdk::{
     bitcoin::{self, PrivateKey},
     client::HttpClient,
     context::SwapContext,
-    driver::{ChainConfig, Destinations, Driver, MemoryStore, Swap},
+    driver::{ChainConfig, Destinations, Driver, MemoryStore, Swap, TargetAmount},
     elements,
     esplora::{BitcoinEsplora, LiquidEsplora},
     invoice,
@@ -115,13 +115,17 @@ async fn main() -> anyhow::Result<()> {
 
     for (chain, spec) in swaps {
         if let Ok(receive_amount) = spec.parse::<u64>() {
-            let quote = driver.quote(None, Some(chain), receive_amount).await?;
+            let quote = driver
+                .quote(None, Some(chain), TargetAmount::Receive(receive_amount))
+                .await?;
             let swap = driver.swap_out(quote, None).await?;
             println!("pay {}", swap.claim_invoice());
         } else {
             let bolt11 = spec;
             let receive_amount = invoice::amount_msat(&bolt11)? / 1000;
-            let quote = driver.quote(Some(chain), None, receive_amount).await?;
+            let quote = driver
+                .quote(Some(chain), None, TargetAmount::Receive(receive_amount))
+                .await?;
             let swap = driver.swap_in(quote, bolt11, None).await?;
             println!(
                 "deposit {} sats to {}",

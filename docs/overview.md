@@ -94,7 +94,7 @@ the store, the client, and the update stream.
 Create swaps, spawn the loop, watch the updates:
 
 ```rust
-let quote = driver.quote(None, Some(Chain::Bitcoin), 50_000).await?;
+let quote = driver.quote(None, Some(Chain::Bitcoin), TargetAmount::Receive(50_000)).await?;
 let swap = driver.swap_out(quote, Some(claim_address)).await?;
 println!("pay {}", swap.claim_invoice());
 
