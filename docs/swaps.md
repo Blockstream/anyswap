@@ -18,7 +18,8 @@ Pinned by what the user spends, the receive amount is inverted from the send
 amount. Both amounts are what the swap is created with. Its `quote_id` pins
 the base fee, so the price cannot move between quoting and creating; a quote
 older than `expires_at` is refused and you fetch a new one. Show the quote
-to the user, create the swap when they accept.
+to the user, create the swap when they accept. The record keeps `base_fee`
+and `service_fee` as the server split the swap's own fee.
 
 ## SwapIn: on-chain to Lightning
 
@@ -29,22 +30,21 @@ comfortable expiry.
 
 ```rust
 let swap = driver.swap_in(quote, bolt11, Some(refund_address)).await?;
-println!("deposit {} to {}", swap.record().send_amount, swap.address()?);
+println!("deposit {} to {}", swap.record().await?.send_amount, swap.address().await?);
 ```
 
-The refund address is optional; see [SwapIn refunds](#swapin-refunds) for
+The refund address is optional; see [SwapIn funds and refunds](#swapin-funds-and-refunds) for
 what happens without one.
 
 The user sends `send_amount` to the address as one output of exactly that
-value. From there the driver waits for the invoice to be paid, reveals the
-refund key once the preimage is on the table, and closes the swap. Anything
-else that lands under the script, a wrong amount or a second deposit, is
-never treated as the deposit; it is swept back by the refund machinery
-below.
+value. From there the driver waits for the invoice to be paid and reveals
+the refund key once the preimage is on the table. Anything else that lands
+under the script, a wrong amount or a later second deposit, is a stray: it
+shows in `funds` and is refunded by the machinery below.
 
-A SwapIn ends in `Completed`, or in `Refund` when the deposit comes back:
-because the swap was canceled, because the server cooperated with a key, or
-because the CSV matured with the deposit unclaimed.
+A SwapIn ends in `Completed`, or in `Canceled` when the deposit stays the
+user's: the swap was canceled, the server gave up with its key, or the CSV
+matured with the deposit unclaimed. Its refund then shows in `funds`.
 
 ## SwapOut: Lightning to on-chain
 
@@ -53,43 +53,51 @@ take one from the destinations hook:
 
 ```rust
 let swap = driver.swap_out(quote, Some(claim_address)).await?;
-println!("pay {}", swap.claim_invoice());
+println!("pay {}", swap.claim_invoice().await?);
 ```
 
 The user pays `claim_invoice`, a hold invoice for `send_amount`. The server
-then opens the on-chain output; the driver waits for it to confirm, commits,
-hands the server the preimage that releases the payment, and claims the
-output to `claim_address`, cooperatively through the keypath when the server
-sends its key and through the preimage path when it does not.
+then opens the on-chain output; the driver waits for it to confirm, hands the
+server the preimage that releases the payment, once, and claims the output to
+`claim_address` on the next pass: through the keypath when the server answered
+with its key, through the preimage path when it did not. The claim is rebuilt
+at the current fee rate each pass until it confirms.
 
-A SwapOut ends in `Completed`, in `Canceled` when it closes with the payment
-safe (the hold invoice expires back), or in `Lost` if a foreign spend
-confirms after the preimage went out, which a correct server never does.
+A SwapOut ends in `Completed`, or in `Canceled` when it closes with the
+payment safe: the hold invoice expires back, or the server's CSV refund took
+the opening. A correct server never refunds an opening after it took our
+preimage, so the driver does not tell that case apart.
 
 ## Statuses
 
-`swap.status()` is resolved from the chain on every pass:
+`swap.status()` reads the store, where every pass resolves it from the chain:
 
 | Status       | Flow    | Meaning                                                                 |
 |--------------|---------|-------------------------------------------------------------------------|
+| `Restoring`  | both    | Restored, before its first pass: where it stands is not known yet. |
 | `Funding`    | both    | Nothing on chain yet. Past `expires_at` the driver sends a cancel and keeps watching. |
-| `Confirming` | both    | The opening has `confs` of `needed` confirmations; `matures_at` is where its CSV runs out. |
-| `CoopKey`    | SwapOut | Committed to claim. Waiting for the server's key until `expires_at`, then claiming by preimage. |
-| `Spending`   | SwapOut | Our claim is broadcast with `confs` confirmations.                       |
-| `Refund`     | SwapIn  | Everything under the script is ours: `refundable` waits, `refunded` lists the sweeps. Never left; its contents move with the chain. |
+| `Confirming` | both    | The opening has `confs` of `needed` confirmations.                       |
+| `Claiming`   | SwapOut | The preimage may have left: claiming the opening, with our `claim` and its `confs` once broadcast. |
 | `Completed`  | both    | Paid out; `opening` and `payout` are the txids.                          |
-| `Canceled`   | SwapOut | Closed with the payment safe.                                            |
-| `Lost`       | SwapOut | A foreign spend confirmed after the preimage went out.                   |
+| `Canceled`   | both    | The swap did not happen, for `reason`. SwapOut: the payment is safe, and `opening` is set when the server's CSV refund took it. SwapIn: the deposit is the user's, in `funds`. |
 
-`Completed`, `Canceled` and `Lost` are terminal (`status.is_terminal()`). A
-`Refund` instead goes quiet: once nothing spendable remains, every sweep has
-confirmed and its window has passed, `run` stops making passes for it, but
-any coin that later lands under the script wakes it back up within
-`refund_timeout` of entering the status.
+A `Canceled` status says why in `reason`:
 
-`swap.server_status()` is the server's own label from the last pass. Show it
-so a swap waiting on the server says whom it waits for; the driver never
-acts on it.
+| Reason           | Flow    | Meaning                                                                  |
+|------------------|---------|--------------------------------------------------------------------------|
+| `ServerCanceled` | both    | The server gave the swap up, with its `error_type` and `cancel_message`. `UserCanceled` is any cancel the driver sent; `cancel_message` says whose. |
+| `CsvMatured`     | SwapIn  | The deposit's CSV matured with no word from the server.                  |
+| `ServerRefunded` | SwapOut | The server's CSV refund took the opening.                                |
+
+`Completed` and `Canceled` are terminal (`status.is_terminal()`). A
+terminal SwapOut goes quiet at once. A terminal SwapIn keeps getting passes
+while a refund of ours is unconfirmed, while anything is `Locked` or
+`Refundable` and there is somewhere to refund it, and for `refund_timeout`
+after it ended, so a deposit that crossed the end is found.
+
+The record's `server_status` is the server's own label from the last pass.
+Show it so a swap waiting on the server says whom it waits for; the driver
+never acts on it.
 
 ## Canceling
 
@@ -101,29 +109,52 @@ match swap.cancel().await? {
 ```
 
 A swap can only be canceled while nothing irreversible has happened: before
-a SwapIn deposit is claimed and before a SwapOut commits to its preimage.
+a SwapIn deposit is claimed and before a SwapOut tries its preimage.
 
-## SwapIn refunds
+## SwapIn funds and refunds
 
-The driver builds and broadcasts refunds itself, keypath when it holds the
-server's key and CSV otherwise, and only when the coins are worth more than
-the fee to move them. It pays the refund address given to `swap_in`, which
-travels in the signed request. A swap created without one falls back to a
-`Destinations`, asked once per broadcast:
+`swap.funds()` lists every output under the script that is the user's, as
+the last pass left it: every stray, and the deposit once the swap is
+canceled. The deposit the server was paid for is not listed, nor is an
+output the server took by its own path.
+
+| `FundState`  | Meaning                                                              |
+|--------------|----------------------------------------------------------------------|
+| `Locked`     | Under the CSV until `at`, or unconfirmed so its CSV has not started   |
+| `Refundable` | Spendable now and worth its fee: the next refund takes it            |
+| `Dust`       | Spendable, but worth less than its fee at the last rate              |
+| `Refunding`  | In our refund `txid`, not yet in a block                             |
+| `Refunded`   | In our refund `txid`, in a block                                     |
+
+Every pass refunds everything `Refundable` in one transaction, keypath when
+it holds the server's key and CSV otherwise, in any status. A swap can see
+several refunds, one per pass with something refundable, each fund carrying
+the txid of the one that took it. It pays the refund address given to
+`swap_in`, which travels in the signed request. A swap created without one
+falls back to a `Destinations`, asked once per broadcast:
 
 ```rust
+#[async_trait]
 impl Destinations for MyWallet {
-    fn claim_address(&self, chain: Chain) -> String { self.next_address(chain) }
-    fn refund_address(&self, chain: Chain) -> String { self.next_address(chain) }
+    async fn claim_address(&self, chain: Chain) -> Result<String, String> {
+        self.next_address(chain).await.map_err(|e| e.to_string())
+    }
+    async fn refund_address(&self, chain: Chain) -> Result<String, String> {
+        self.claim_address(chain).await
+    }
 }
 
 let driver = driver.with_destinations(my_wallet);
 ```
 
-Registered like this, `run` sweeps anything spendable the moment it can, and
-`swap_out` may pass `None` for its claim address. Without either, call
-`swap.refund(&destination).await?` on a `SwapIn` handle yourself; it returns
-the sweep's txid, or `None` while there is nothing spendable.
+Registered like this, `run` refunds anything refundable the moment it can,
+and `swap_out` may pass `None` for its claim address. An `Err` fails the call
+that asked, as `DriverError::Destination`. The hook must resolve promptly:
+the loop ticks swaps one at a time and waits on it, so bound any remote call
+with a timeout and do not wait on the user there. Without a hook, call
+`swap.refund(&destination).await?` on a `SwapIn` handle yourself, in any
+status; it makes one pass, refunds to `destination` and returns the refund's
+txid, or `None` while nothing is refundable.
 
 ## Configuration
 
@@ -132,11 +163,9 @@ the sweep's txid, or `None` while there is nothing spendable.
 | Knob              | Default | Meaning                                                        |
 |-------------------|---------|----------------------------------------------------------------|
 | `funding_timeout` | 20 min  | From creation: when a swap with nothing on chain cancels       |
-| `coop_timeout`    | 5 min   | SwapOut: how long to wait for the server's key before claiming by preimage |
 | `poll_interval`   | 15 s    | The longest wait between passes without a server signal        |
 | `fee_conf_target` | 3 blocks| The target every fee estimate is read at                       |
-| `refund_timeout`  | 1 h     | How long an empty `Refund` keeps getting passes                |
-| `trust_unsigned`  | off     | Whether `restore` takes an unsigned swap on the server's word, see [recovery](recovery.md#losing-the-store) |
+| `refund_timeout`  | 1 h     | From a SwapIn's end: how long it keeps getting passes once nothing of the user's is left to move |
 
 `ChainConfig` (passed with each `with_chain`) holds the per-chain ones, with
 `ChainConfig::bitcoin()` and `ChainConfig::liquid()` as defaults:

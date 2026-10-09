@@ -12,7 +12,7 @@ use uuid::Uuid;
 
 use crate::types::Outpoint;
 
-#[derive(Debug, Error)]
+#[derive(Clone, Debug, Error)]
 #[error("invalid {what}: {message}")]
 pub struct CodecError {
     what: &'static str,

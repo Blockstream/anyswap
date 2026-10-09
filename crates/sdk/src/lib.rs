@@ -13,7 +13,7 @@
 
 #[cfg(feature = "esplora")]
 pub use anyswap_core::esplora;
-pub use anyswap_core::{api, auth, fee, invoice, script, transaction, types};
+pub use anyswap_core::{PROTOCOL_VERSION, api, auth, fee, invoice, script, transaction, types};
 pub use bitcoin;
 pub use elements;
 

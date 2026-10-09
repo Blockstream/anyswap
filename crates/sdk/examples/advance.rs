@@ -27,7 +27,8 @@ use anyswap_sdk::{
     client::HttpClient,
     context::SwapContext,
     driver::{
-        ChainConfig, Driver, Handle, Status, StoreError, SwapRecord, SwapStore, TargetAmount,
+        ChainConfig, Driver, Fund, FundState, Handle, Status, StoreError, SwapRecord, SwapStore,
+        TargetAmount,
     },
     esplora::BitcoinEsplora,
     invoice,
@@ -75,16 +76,19 @@ impl SwapStore for FileStore {
         }
     }
 
-    async fn list(&self) -> Result<Vec<SwapRecord>, StoreError> {
-        let mut records = Vec::new();
+    async fn list(&self) -> Result<Vec<Uuid>, StoreError> {
+        let mut ids = Vec::new();
         for entry in fs::read_dir(&self.0).map_err(store_error)? {
             let path = entry.map_err(store_error)?.path();
-            if path.extension().is_some_and(|ext| ext == "json") {
-                let json = fs::read(&path).map_err(store_error)?;
-                records.push(serde_json::from_slice(&json).map_err(store_error)?);
+            if path.extension().is_some_and(|ext| ext == "json")
+                && let Some(id) = path
+                    .file_stem()
+                    .and_then(|stem| stem.to_str()?.parse().ok())
+            {
+                ids.push(id);
             }
         }
-        Ok(records)
+        Ok(ids)
     }
 }
 
@@ -116,15 +120,15 @@ fn setup(dir: PathBuf) -> anyhow::Result<(Driver<Wallet>, Arc<FileStore>)> {
     Ok((driver, store))
 }
 
-/// `advance` until the swap settles: a terminal status, or a `Refund` with
-/// nothing left to take and every sweep confirmed. A chain or server outage
-/// is waited out, since `advance` paces itself.
-async fn complete(swap: &mut Handle<Wallet>) -> anyhow::Result<Status> {
+/// `advance` until the swap settles: a terminal status and, on a SwapIn,
+/// every refund of ours confirmed with nothing left to take. A chain or
+/// server outage is waited out, since `advance` paces itself.
+async fn complete(swap: &Handle<Wallet>) -> anyhow::Result<Status> {
     loop {
         match swap.advance().await {
             Ok(status) => {
                 println!("{status:?}");
-                if settled(&status) {
+                if completed(&status, &swap.record().await?.funds) {
                     return Ok(status);
                 }
             }
@@ -134,15 +138,11 @@ async fn complete(swap: &mut Handle<Wallet>) -> anyhow::Result<Status> {
     }
 }
 
-fn settled(status: &Status) -> bool {
-    match status {
-        Status::Refund {
-            refundable,
-            refunded,
-            ..
-        } => *refundable == 0 && refunded.iter().all(|(_, confirmed)| *confirmed),
-        _ => status.is_terminal(),
-    }
+fn completed(status: &Status, funds: &[Fund]) -> bool {
+    status.is_terminal()
+        && funds
+            .iter()
+            .all(|fund| matches!(fund.state, FundState::Refunded { .. } | FundState::Dust))
 }
 
 #[tokio::main]
@@ -160,16 +160,16 @@ async fn main() -> anyhow::Result<()> {
                     TargetAmount::Receive(receive_amount),
                 )
                 .await?;
-            let mut swap = driver
+            let swap = driver
                 .swap_in(quote, bolt11.to_owned(), Some(refund_address.to_owned()))
                 .await?;
             println!(
                 "{}: deposit {} sats to {}",
                 swap.swap_id(),
-                swap.record().send_amount,
-                swap.address()?
+                swap.record().await?.send_amount,
+                swap.address().await?
             );
-            complete(&mut swap).await?;
+            complete(&swap).await?;
         }
         ["out", sats, claim_address] => {
             let quote = driver
@@ -179,27 +179,28 @@ async fn main() -> anyhow::Result<()> {
                     TargetAmount::Receive(sats.parse()?),
                 )
                 .await?;
-            let mut swap = driver
+            let swap = driver
                 .swap_out(quote, Some(claim_address.to_owned()))
                 .await?;
-            println!("{}: pay {}", swap.swap_id(), swap.claim_invoice());
-            complete(&mut swap).await?;
+            println!("{}: pay {}", swap.swap_id(), swap.claim_invoice().await?);
+            complete(&swap).await?;
         }
         ["resume", swap_id] => {
-            let mut swap = driver
+            let swap = driver
                 .get(swap_id.parse()?)
                 .await?
                 .ok_or_else(|| anyhow::anyhow!("no swap {swap_id} on file"))?;
-            complete(&mut swap).await?;
+            complete(&swap).await?;
         }
         ["list"] => {
-            for record in store.list().await? {
-                println!(
-                    "{} {} {:?}",
-                    record.swap_id,
-                    record.swap_type()?,
-                    record.status
-                );
+            for swap_id in store.list().await? {
+                match store.load(&swap_id).await {
+                    Ok(Some(record)) => {
+                        println!("{swap_id} {} {:?}", record.swap_type()?, record.status)
+                    }
+                    Ok(None) => {}
+                    Err(e) => println!("{swap_id} unreadable: {e}"),
+                }
             }
         }
         _ => anyhow::bail!(

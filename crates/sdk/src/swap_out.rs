@@ -137,7 +137,7 @@ pub struct SwapOut {
 /// the CSV timeout: [`AwaitRefundTxConfirmation`](Self::AwaitRefundTxConfirmation)
 /// -> [`Refunded`](Self::Refunded). Cancellation before the opening tx is
 /// broadcast results in [`Canceled`](Self::Canceled).
-#[derive(Debug, Clone, strum::Display, strum::IntoStaticStr)]
+#[derive(Debug, Clone, PartialEq, Eq, strum::Display, strum::IntoStaticStr)]
 pub enum SwapOutStatus {
     /// Server is waiting for the user to pay the held `claim_invoice`.
     AwaitClaimInvoicePay,
@@ -329,7 +329,7 @@ impl SwapOut {
         ctx: &SwapContext<W>,
     ) -> Result<SecretKey, SwapOutError> {
         ctx.wallet()
-            .privkey(&self.swap_id)
+            .dest_claim_privkey(&self.swap_id)
             .map_err(|error| SwapOutError::Wallet(error.to_string()))
     }
 
@@ -471,7 +471,7 @@ mod tests {
             service_fee: 0,
             payment_hash: sha256::Hash::hash(&preimage).to_byte_array(),
             csv: 144,
-            claim_pubkey: ctx.wallet().pubkey(&swap_id).unwrap(),
+            claim_pubkey: ctx.wallet().dest_claim_pubkey(&swap_id).unwrap(),
             refund_pubkey: service_signing.public_key(secp()),
             user_blinding_pubkey: Some(ctx.wallet().dest_blinding_pubkey(&swap_id).unwrap()),
             service_blinding_pubkey: Some(service_blinding.public_key(secp())),

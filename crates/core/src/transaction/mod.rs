@@ -25,7 +25,7 @@ pub use self::{
     liquid::{liquid_spend_input, validate_liquid_prevout},
 };
 
-#[derive(Debug, Error)]
+#[derive(Clone, Debug, Error)]
 pub enum TxError {
     #[error("no inputs")]
     NoInputs,

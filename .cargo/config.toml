@@ -1,0 +1,7 @@
+# getrandom 0.3 (pulled by the musig secp256k1 via rand 0.9, used by the
+# sdk-wasm keypath spends) needs its browser backend selected by cfg to compile
+# on wasm32; the `wasm_js` feature alone is not enough. Lives at the workspace
+# root so it applies no matter where the wasm build is invoked from. Only the
+# wasm32 target is affected, and sdk-wasm is the only crate that targets it.
+[target.wasm32-unknown-unknown]
+rustflags = ['--cfg', 'getrandom_backend="wasm_js"']

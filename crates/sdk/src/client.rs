@@ -64,7 +64,7 @@ use serde::Deserialize;
 use thiserror::Error;
 use uuid::Uuid;
 
-#[derive(Debug, Error)]
+#[derive(Clone, Debug, Error)]
 pub enum ClientError {
     /// The server could not be reached, or the exchange broke before an
     /// answer.
@@ -80,10 +80,10 @@ pub enum ClientError {
     },
 
     #[error("invalid auth header value: {0}")]
-    Header(#[from] reqwest::header::InvalidHeaderValue),
+    Header(String),
 
     #[error("json: {0}")]
-    Json(#[from] serde_json::Error),
+    Json(String),
 
     #[error("missing identity private key")]
     MissingPrivateKey,
@@ -92,6 +92,18 @@ pub enum ClientError {
 impl From<reqwest::Error> for ClientError {
     fn from(e: reqwest::Error) -> Self {
         Self::Transport(e.to_string())
+    }
+}
+
+impl From<reqwest::header::InvalidHeaderValue> for ClientError {
+    fn from(e: reqwest::header::InvalidHeaderValue) -> Self {
+        Self::Header(e.to_string())
+    }
+}
+
+impl From<serde_json::Error> for ClientError {
+    fn from(e: serde_json::Error) -> Self {
+        Self::Json(e.to_string())
     }
 }
 

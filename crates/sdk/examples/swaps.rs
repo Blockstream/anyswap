@@ -21,24 +21,29 @@ use anyswap_sdk::{
     bitcoin::{self, PrivateKey},
     client::HttpClient,
     context::SwapContext,
-    driver::{ChainConfig, Destinations, Driver, MemoryStore, Swap, TargetAmount},
+    driver::{ChainConfig, Destinations, Driver, MemoryStore, TargetAmount},
     elements,
     esplora::{BitcoinEsplora, LiquidEsplora},
     invoice,
     types::{Chain, NATIVE_ASSET, SwapNetwork},
     wallet::Wallet,
 };
+use async_trait::async_trait;
 
 /// The addresses given on the command line, one per chain, for both roles.
 struct Addresses(HashMap<Chain, String>);
 
+#[async_trait]
 impl Destinations for Addresses {
-    fn claim_address(&self, chain: Chain) -> String {
-        self.0.get(&chain).cloned().unwrap_or_default()
+    async fn claim_address(&self, chain: Chain) -> Result<String, String> {
+        self.0
+            .get(&chain)
+            .cloned()
+            .ok_or_else(|| format!("no address for {chain}"))
     }
 
-    fn refund_address(&self, chain: Chain) -> String {
-        self.claim_address(chain)
+    async fn refund_address(&self, chain: Chain) -> Result<String, String> {
+        self.claim_address(chain).await
     }
 }
 
@@ -119,7 +124,7 @@ async fn main() -> anyhow::Result<()> {
                 .quote(None, Some(chain), TargetAmount::Receive(receive_amount))
                 .await?;
             let swap = driver.swap_out(quote, None).await?;
-            println!("pay {}", swap.claim_invoice());
+            println!("pay {}", swap.claim_invoice().await?);
         } else {
             let bolt11 = spec;
             let receive_amount = invoice::amount_msat(&bolt11)? / 1000;
@@ -129,8 +134,8 @@ async fn main() -> anyhow::Result<()> {
             let swap = driver.swap_in(quote, bolt11, None).await?;
             println!(
                 "deposit {} sats to {}",
-                swap.record().send_amount,
-                swap.address()?
+                swap.record().await?.send_amount,
+                swap.address().await?
             );
         }
     }
@@ -138,25 +143,17 @@ async fn main() -> anyhow::Result<()> {
     let mut updates = driver.subscribe();
     tokio::spawn(driver.run());
     while let Some(swap) = updates.next().await {
-        match swap.error() {
-            Some(error) => println!("{} error: {error}", swap.swap_id()),
-            None => println!(
-                "{} {:?} (server: {})",
-                swap.swap_id(),
-                swap.status(),
-                server_label(&swap)
-            ),
+        if let Some(error) = swap.error() {
+            println!("{} error: {error}", swap.swap_id());
+            continue;
         }
+        let record = swap.record().await?;
+        println!(
+            "{} {:?} (server: {})",
+            swap.swap_id(),
+            record.status,
+            record.server_status.as_deref().unwrap_or("unreachable")
+        );
     }
     Ok(())
-}
-
-/// The server's status name, shown so a swap waiting on the server says whom
-/// it waits for.
-fn server_label(swap: &Swap<Wallet>) -> &'static str {
-    match swap {
-        Swap::In(swap) => swap.server_status().map(<&str>::from),
-        Swap::Out(swap) => swap.server_status().map(<&str>::from),
-    }
-    .unwrap_or("unreachable")
 }

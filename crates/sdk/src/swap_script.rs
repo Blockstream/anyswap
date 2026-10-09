@@ -5,8 +5,6 @@
 //! transactions through here.
 
 use std::fmt;
-#[cfg(feature = "driver")]
-use std::str::FromStr;
 
 #[cfg(feature = "driver")]
 use anyswap_core::types::Outpoint;
@@ -16,6 +14,7 @@ use anyswap_core::{
         self, ClaimByPreimageParams, KeypathSpendParams, LiquidChainCtx, RefundByCsvParams, TxError,
     },
     types::{Chain, SwapNetwork},
+    utils::sha256_payment_hash,
 };
 use bitcoin::secp256k1::{PublicKey, SecretKey};
 use elements::AssetId;
@@ -28,7 +27,7 @@ use crate::{
     wallet::SwapWallet,
 };
 
-#[derive(Debug, Error)]
+#[derive(Clone, Debug, Error)]
 pub enum ScriptError {
     #[error("this client is not set up for Liquid; add the Liquid parameters to the context")]
     LiquidNotConfigured,
@@ -114,29 +113,14 @@ impl Tx {
                 .collect(),
         }
     }
+}
 
-    #[cfg(feature = "driver")]
-    pub fn preimage_at(&self, vin: u32, payment_hash: &[u8; 32]) -> Option<[u8; 32]> {
-        match self {
-            Self::Bitcoin(tx) => transaction::bitcoin::extract_preimage_at(tx, vin, payment_hash),
-            Self::Liquid(tx) => transaction::liquid::extract_preimage_at(tx, vin, payment_hash),
-        }
-    }
-
-    /// Whether any output pays `script_pubkey`.
-    #[cfg(feature = "driver")]
-    pub fn pays(&self, script_pubkey: &[u8]) -> bool {
-        match self {
-            Self::Bitcoin(tx) => tx
-                .output
-                .iter()
-                .any(|o| o.script_pubkey.as_bytes() == script_pubkey),
-            Self::Liquid(tx) => tx
-                .output
-                .iter()
-                .any(|o| o.script_pubkey.as_bytes() == script_pubkey),
-        }
-    }
+/// How an input spent a swap output: the three ways its script opens.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SpendPath {
+    Keypath,
+    Preimage([u8; 32]),
+    Csv,
 }
 
 enum Inner {
@@ -151,6 +135,7 @@ enum Inner {
 pub struct SwapScript {
     chain: Chain,
     network: SwapNetwork,
+    payment_hash: [u8; 32],
     inner: Inner,
 }
 
@@ -162,10 +147,19 @@ impl<W: SwapWallet> SwapContext<W> {
         let wallet = self.wallet();
         let wallet_error = |e: W::Error| ScriptError::Wallet(e.to_string());
         let script_error = |e: anyhow::Error| ScriptError::Script(e.to_string());
-        let ours = wallet.pubkey(&terms.swap_id).map_err(wallet_error)?;
         let (claim, refund) = match terms.side {
-            Side::Source => (terms.server_pubkey, ours),
-            Side::Dest => (ours, terms.server_pubkey),
+            Side::Source => (
+                terms.server_pubkey,
+                wallet
+                    .source_refund_pubkey(&terms.swap_id)
+                    .map_err(wallet_error)?,
+            ),
+            Side::Dest => (
+                wallet
+                    .dest_claim_pubkey(&terms.swap_id)
+                    .map_err(wallet_error)?,
+                terms.server_pubkey,
+            ),
         };
         let (claim, refund) = (claim.x_only_public_key().0, refund.x_only_public_key().0);
         let inner = match terms.chain {
@@ -209,6 +203,7 @@ impl<W: SwapWallet> SwapContext<W> {
         Ok(SwapScript {
             chain: terms.chain,
             network: self.network(),
+            payment_hash: terms.payment_hash,
             inner,
         })
     }
@@ -220,23 +215,6 @@ impl SwapScript {
             Inner::Bitcoin(script) => script.address(self.network),
             Inner::Liquid { script, .. } => script.confidential_address(self.network).to_string(),
         }
-    }
-
-    /// The script pubkey of `address`, to recognise a payout to it.
-    #[cfg(feature = "driver")]
-    pub fn destination_script(&self, address: &str) -> Result<Vec<u8>, TxError> {
-        let invalid = |e: &dyn std::fmt::Display| TxError::InvalidDestination(e.to_string());
-        Ok(match self.chain {
-            Chain::Bitcoin => bitcoin::Address::from_str(address)
-                .map_err(|e| invalid(&e))?
-                .assume_checked()
-                .script_pubkey()
-                .to_bytes(),
-            Chain::Liquid => elements::Address::from_str(address)
-                .map_err(|e| invalid(&e))?
-                .script_pubkey()
-                .to_bytes(),
-        })
     }
 
     /// The outputs of `tx` that are this swap's: paying the script, and on
@@ -313,6 +291,45 @@ impl SwapScript {
     ) -> Result<(Vec<SwapUtxo>, Vec<SwapUtxo>), UtxoError> {
         let liquid = self.unblinding().map(|(key, asset)| (*key, asset));
         utxo::partition_economical(utxos, self.chain, fee_rate, liquid)
+    }
+
+    /// How input `vin` of `tx` spent this script, read from its witness.
+    /// `None` when the witness opens none of its paths.
+    pub fn spend_path(&self, tx: &Tx, vin: u32) -> Option<SpendPath> {
+        let mut items: Vec<&[u8]> = match tx {
+            Tx::Bitcoin(tx) => tx.input.get(vin as usize)?.witness.iter().collect(),
+            Tx::Liquid(tx) => tx
+                .input
+                .get(vin as usize)?
+                .witness
+                .script_witness
+                .iter()
+                .collect(),
+        };
+        // The last item starting 0x50 is the annex (BIP341).
+        if items.len() > 1 && items.last()?.first() == Some(&0x50) {
+            items.pop();
+        }
+        let (claim, refund) = match &self.inner {
+            Inner::Bitcoin(script) => (
+                script.claim_script().as_bytes(),
+                script.refund_script().as_bytes(),
+            ),
+            Inner::Liquid { script, .. } => (
+                script.claim_script().as_bytes(),
+                script.refund_script().as_bytes(),
+            ),
+        };
+        match items.as_slice() {
+            [_signature] => Some(SpendPath::Keypath),
+            [_signature, leaf, _control] if *leaf == refund => Some(SpendPath::Csv),
+            [_signature, preimage, leaf, _control] if *leaf == claim => {
+                let preimage = <[u8; 32]>::try_from(*preimage).ok()?;
+                (sha256_payment_hash(&preimage) == self.payment_hash)
+                    .then_some(SpendPath::Preimage(preimage))
+            }
+            _ => None,
+        }
     }
 
     /// A cooperative keypath spend, claim or refund, with both keys in hand.

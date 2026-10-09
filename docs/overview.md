@@ -96,14 +96,14 @@ Create swaps, spawn the loop, watch the updates:
 ```rust
 let quote = driver.quote(None, Some(Chain::Bitcoin), TargetAmount::Receive(50_000)).await?;
 let swap = driver.swap_out(quote, Some(claim_address)).await?;
-println!("pay {}", swap.claim_invoice());
+println!("pay {}", swap.claim_invoice().await?);
 
 let mut updates = driver.subscribe();
 tokio::spawn(driver.run());
 while let Some(swap) = updates.next().await {
     match swap.error() {
         Some(error) => eprintln!("{} error: {error}", swap.swap_id()),
-        None => println!("{} {:?}", swap.swap_id(), swap.status()),
+        None => println!("{} {:?}", swap.swap_id(), swap.status().await?),
     }
 }
 ```
@@ -115,8 +115,10 @@ comes from a fresh read.
 
 ## Updates and errors
 
-`subscribe` yields a handle for every swap a pass changed, plus one for
-every failing pass. A failing swap stays in the set and is retried each
+`subscribe` yields a handle for every swap a pass saw change, on chain or
+at the server, plus one for every failing pass. A handle keeps no copy of
+the swap: `record` and `status` read the store, `error` the driver's
+latest. A failing swap stays in the set and is retried each
 pass, so a broken backend shows up as a heartbeat of updates with
 `swap.error()` set; a pass that works clears it. `DriverError::retryable`
 separates a chain or server outage, which the next pass may simply outlive,
@@ -130,16 +132,18 @@ any stored swap.
 Handles can pace the loop themselves, without `run`:
 
 ```rust
-let mut swap = driver.swap_out(quote, Some(claim_address)).await?;
-while !swap.status().is_terminal() {
+let swap = driver.swap_out(quote, Some(claim_address)).await?;
+while !swap.status().await?.is_terminal() {
     let status = swap.advance().await?;
     println!("{status:?}");
 }
 ```
 
 `step` makes one pass now, `advance` first waits for a server signal or
-`poll_interval`, whichever comes first. A failed pass returns the error and
-moves nothing; calling again retries. `run` and handles can be mixed freely,
+`poll_interval`, whichever comes first. A failed pass returns the error;
+when only its message or its spend failed, it still saved what it saw and
+refunded what was refundable, and calling again retries the rest. `run` and
+handles can be mixed freely,
 a per-swap lock keeps passes from overlapping.
 
 ## Where to go next

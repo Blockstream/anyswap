@@ -23,7 +23,7 @@ use bitcoin::{Amount, secp256k1::SecretKey};
 use elements::AssetId;
 use thiserror::Error;
 
-#[derive(Debug, Error)]
+#[derive(Clone, Debug, Error)]
 pub enum UtxoError {
     #[error("expected a {expected} utxo, got a {found} one")]
     WrongChain { expected: Chain, found: Chain },
@@ -155,20 +155,27 @@ pub(crate) fn partition_economical(
     fee_rate: f64,
     liquid: Option<(SecretKey, AssetId)>,
 ) -> Result<(Vec<SwapUtxo>, Vec<SwapUtxo>), UtxoError> {
-    // Liquid transactions are an order of magnitude larger than Bitcoin ones,
-    // because confidential outputs carry commitments and rangeproofs.
-    let vsize = match chain {
-        Chain::Bitcoin => transaction::REFUND_VSIZE,
-        Chain::Liquid => transaction::liquid::REFUND_VSIZE,
-    };
-    let fee =
-        fee::fee_for_vsize(chain, vsize, fee_rate).ok_or(UtxoError::InvalidFeeRate(fee_rate))?;
+    let fee = refund_fee(chain, fee_rate).ok_or(UtxoError::InvalidFeeRate(fee_rate))?;
     let liquid = liquid.as_ref().map(|(key, asset)| (key, *asset));
     Ok(utxos
         .iter()
         .cloned()
         .partition(|utxo| utxo.value(liquid).is_some_and(|value| value > fee)))
 }
+
+/// The fee of a single-input refund on the CSV path at `fee_rate`: what an
+/// output has to be worth to pay for its own refund. `None` for a rate that
+/// is not a fee rate.
+pub(crate) fn refund_fee(chain: Chain, fee_rate: f64) -> Option<u64> {
+    // Liquid transactions are an order of magnitude larger than Bitcoin ones,
+    // because confidential outputs carry commitments and rangeproofs.
+    let vsize = match chain {
+        Chain::Bitcoin => transaction::REFUND_VSIZE,
+        Chain::Liquid => transaction::liquid::REFUND_VSIZE,
+    };
+    fee::fee_for_vsize(chain, vsize, fee_rate)
+}
+
 #[cfg(test)]
 pub(crate) mod fixtures {
     use anyswap_core::script::LiquidSwapScript;

@@ -8,7 +8,7 @@ use uuid::Uuid;
 use super::{chain::ChainError, record::StoreError};
 use crate::{client::ClientError, swap_script::ScriptError, utxo::UtxoError};
 
-#[derive(Debug, Error)]
+#[derive(Clone, Debug, Error)]
 pub enum DriverError {
     #[error(transparent)]
     Chain(#[from] ChainError),
@@ -18,6 +18,9 @@ pub enum DriverError {
 
     #[error(transparent)]
     Store(#[from] StoreError),
+
+    #[error("destination: {0}")]
+    Destination(String),
 
     #[error("wallet: {0}")]
     Wallet(String),
@@ -40,6 +43,9 @@ pub enum DriverError {
     #[error("the record of swap {0} has no {1}")]
     MissingField(Uuid, String),
 
+    #[error("the record of swap {0} is version {1}, which this SDK does not drive")]
+    RecordVersion(Uuid, u32),
+
     #[error("swap type {0} is not driven")]
     Unsupported(SwapType),
 
@@ -52,7 +58,7 @@ pub enum DriverError {
     #[error("the quote expired")]
     QuoteExpired,
 
-    #[error("the quote is for another swap type")]
+    #[error("the swap type does not match")]
     WrongSwapType,
 
     #[error("the server offers no quote: {0}")]

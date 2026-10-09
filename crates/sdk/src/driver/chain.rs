@@ -6,7 +6,7 @@ use super::{
     rt::{MaybeSend, MaybeSync},
 };
 
-#[derive(Debug, Error)]
+#[derive(Clone, Debug, Error)]
 #[error("chain: {0}")]
 pub struct ChainError(pub String);
 
@@ -32,6 +32,12 @@ pub trait ChainClient: MaybeSend + MaybeSync {
     /// Every transaction paying or spending `address`.
     async fn address_history(&self, address: &str) -> Result<Vec<HistoryTx>, ChainError>;
 
+    /// The transaction spending output `vout` of `txid`, mempool included, or
+    /// `None` while it is unspent: Esplora's outspend with the spending
+    /// transaction fetched. Read from the output itself, so it is found
+    /// however many other transactions crowd the address's history.
+    async fn outspend(&self, txid: &str, vout: u32) -> Result<Option<HistoryTx>, ChainError>;
+
     /// Broadcasts a signed transaction and returns its txid.
     async fn broadcast(&self, tx_hex: &str) -> Result<String, ChainError>;
 }
@@ -49,6 +55,10 @@ impl<C: ChainClient + ?Sized> ChainClient for std::sync::Arc<C> {
 
     async fn address_history(&self, address: &str) -> Result<Vec<HistoryTx>, ChainError> {
         (**self).address_history(address).await
+    }
+
+    async fn outspend(&self, txid: &str, vout: u32) -> Result<Option<HistoryTx>, ChainError> {
+        (**self).outspend(txid, vout).await
     }
 
     async fn broadcast(&self, tx_hex: &str) -> Result<String, ChainError> {
@@ -105,6 +115,20 @@ mod esplora {
                 .collect())
         }
 
+        async fn outspend(&self, txid: &str, vout: u32) -> Result<Option<HistoryTx>, ChainError> {
+            let txid = bitcoin::Txid::from_str(txid).map_err(|e| invalid("txid", e))?;
+            let Some(spend) = self.get_outspend(&txid, vout).await? else {
+                return Ok(None);
+            };
+            let Some(tx) = self.get_tx(&spend.txid).await? else {
+                return Ok(None);
+            };
+            Ok(Some(HistoryTx {
+                hex: encode_tx_hex(&tx),
+                height: self.get_confirmation_height(&spend.txid).await?,
+            }))
+        }
+
         async fn broadcast(&self, tx_hex: &str) -> Result<String, ChainError> {
             let tx = decode_tx_hex(tx_hex).map_err(|e| invalid("transaction", e))?;
             Ok(BitcoinEsplora::broadcast(self, &tx).await?.to_string())
@@ -134,6 +158,20 @@ mod esplora {
                     height,
                 })
                 .collect())
+        }
+
+        async fn outspend(&self, txid: &str, vout: u32) -> Result<Option<HistoryTx>, ChainError> {
+            let txid = elements::Txid::from_str(txid).map_err(|e| invalid("txid", e))?;
+            let Some(spend) = self.get_outspend(&txid, vout).await? else {
+                return Ok(None);
+            };
+            let Some(tx) = self.get_tx(&spend.txid).await? else {
+                return Ok(None);
+            };
+            Ok(Some(HistoryTx {
+                hex: hex::encode(elements::encode::serialize(&tx)),
+                height: self.get_confirmation_height(&spend.txid).await?,
+            }))
         }
 
         async fn broadcast(&self, tx_hex: &str) -> Result<String, ChainError> {

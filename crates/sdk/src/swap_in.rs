@@ -131,7 +131,7 @@ pub struct SwapIn {
 /// Cancellation at any point before a successful claim results in
 /// [`Canceled`](Self::Canceled), where the server reveals its claim privkey so
 /// the user can refund a deposit without waiting out the CSV.
-#[derive(Debug, Clone, strum::Display, strum::IntoStaticStr)]
+#[derive(Debug, Clone, PartialEq, Eq, strum::Display, strum::IntoStaticStr)]
 pub enum SwapInStatus {
     /// Server is watching the swap address for the opening tx and its
     /// confirmations. No server-provided outpoint yet: the client tracks its own
@@ -330,7 +330,7 @@ impl SwapIn {
         ctx: &SwapContext<W>,
     ) -> Result<SecretKey, SwapInError> {
         ctx.wallet()
-            .privkey(&self.swap_id)
+            .source_refund_privkey(&self.swap_id)
             .map_err(|error| SwapInError::Wallet(error.to_string()))
     }
 }
@@ -449,12 +449,14 @@ mod tests {
 
     use super::*;
     use crate::{
+        swap_script::SpendPath,
         utxo::fixtures::{confidential_tx, genesis_hash, liquid_asset, liquid_destination},
         wallet::Wallet,
     };
 
     const SERVICE_SIGNING_KEY: [u8; 32] = [21; 32];
     const SERVICE_BLINDING_KEY: [u8; 32] = [22; 32];
+    const BITCOIN_DESTINATION: &str = "bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080";
 
     fn context() -> SwapContext<Wallet> {
         let (wallet, _) = Wallet::generate(SwapNetwork::Regtest).unwrap();
@@ -482,7 +484,7 @@ mod tests {
             service_fee: 0,
             payment_hash: sha256::Hash::hash(&preimage).to_byte_array(),
             csv: 144,
-            refund_pubkey: ctx.wallet().pubkey(&swap_id).unwrap(),
+            refund_pubkey: ctx.wallet().source_refund_pubkey(&swap_id).unwrap(),
             claim_pubkey: service_signing.public_key(secp()),
             user_blinding_pubkey: Some(ctx.wallet().source_blinding_pubkey(&swap_id).unwrap()),
             service_blinding_pubkey: Some(service_blinding.public_key(secp())),
@@ -672,6 +674,74 @@ mod tests {
         let tx = anyswap_core::transaction::bitcoin::decode_tx_hex(&tx_hex).unwrap();
         assert_eq!(tx.input.len(), 1);
         assert_eq!(tx.input[0].sequence.to_consensus_u32(), swap.csv);
+    }
+
+    #[test]
+    fn reads_each_spend_path_from_the_witness() {
+        let ctx = context();
+        let server = SecretKey::from_slice(&SERVICE_SIGNING_KEY).unwrap();
+        for chain in [Chain::Bitcoin, Chain::Liquid] {
+            let swap = swap_in(&ctx, chain, canceled());
+            let script = swap.script(&ctx).unwrap();
+            let (opening_tx, destination) = match chain {
+                Chain::Bitcoin => (
+                    bitcoin_tx(&bitcoin_script(&swap, &ctx), &[100_000]),
+                    BITCOIN_DESTINATION.to_string(),
+                ),
+                Chain::Liquid => (
+                    confidential_tx(&liquid_script(&swap, &ctx), &[100_000]),
+                    liquid_destination(),
+                ),
+            };
+            let utxos = swap.outputs(&ctx, &opening_tx).unwrap();
+            let preimage = ctx.wallet().preimage(&swap.swap_id).unwrap();
+            let path = |tx_hex: String| script.spend_path(&Tx::decode(chain, &tx_hex).unwrap(), 0);
+
+            let keypath = swap.refund_by_keypath(&ctx, &utxos, &destination, 1.0);
+            let refund = swap.refund_by_csv(&ctx, &utxos, &destination, 1.0);
+            let claim = script.claim_by_preimage(&utxos, server, preimage, &destination, 1.0);
+            assert_eq!(path(keypath.unwrap()), Some(SpendPath::Keypath));
+            assert_eq!(path(refund.unwrap()), Some(SpendPath::Csv));
+            assert_eq!(path(claim.unwrap()), Some(SpendPath::Preimage(preimage)));
+        }
+    }
+
+    #[test]
+    fn reads_the_spend_path_past_an_annex() {
+        let ctx = context();
+        let swap = swap_in(&ctx, Chain::Bitcoin, canceled());
+        let script = swap.script(&ctx).unwrap();
+        let opening_tx = bitcoin_tx(&bitcoin_script(&swap, &ctx), &[100_000]);
+        let utxos = swap.outputs(&ctx, &opening_tx).unwrap();
+
+        let keypath = swap.refund_by_keypath(&ctx, &utxos, BITCOIN_DESTINATION, 1.0);
+        let refund = swap.refund_by_csv(&ctx, &utxos, BITCOIN_DESTINATION, 1.0);
+        for (tx_hex, expected) in [
+            (keypath.unwrap(), SpendPath::Keypath),
+            (refund.unwrap(), SpendPath::Csv),
+        ] {
+            let mut tx = anyswap_core::transaction::bitcoin::decode_tx_hex(&tx_hex).unwrap();
+            tx.input[0].witness.push([0x50, 1]);
+            assert_eq!(script.spend_path(&Tx::Bitcoin(tx), 0), Some(expected));
+        }
+    }
+
+    #[test]
+    fn reads_no_spend_path_from_a_witness_the_script_does_not_open() {
+        let ctx = context();
+        let swap = swap_in(&ctx, Chain::Bitcoin, canceled());
+        let script = swap.script(&ctx).unwrap();
+        let opening_tx = bitcoin_tx(&bitcoin_script(&swap, &ctx), &[100_000]);
+        let utxos = swap.outputs(&ctx, &opening_tx).unwrap();
+        let tx_hex = swap
+            .refund_by_keypath(&ctx, &utxos, BITCOIN_DESTINATION, 1.0)
+            .unwrap();
+
+        let mut tx = anyswap_core::transaction::bitcoin::decode_tx_hex(&tx_hex).unwrap();
+        tx.input[0].witness.push([1]);
+        let tx = Tx::Bitcoin(tx);
+        assert_eq!(script.spend_path(&tx, 0), None);
+        assert_eq!(script.spend_path(&tx, 1), None);
     }
 
     /// The swap's Liquid script, for building the opening a counterparty funds.

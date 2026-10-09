@@ -132,10 +132,6 @@ mod tests {
     const SEED: [u8; 32] = [0x42; 32];
     const SWAP_ID: &str = "00112233-4455-6677-8899-aabbccddeeff";
 
-    // BIP39 seed of the standard test mnemonic with an empty passphrase, from
-    // which the SDK user wallet derives.
-    const BIP39_TEST_SEED: &str = "5eb00bbddcf069084889a8ab9155568165f5c453ccb85e70811aaed6f6da5fc19a5ac40b389cd370d086206dec8aa6c43daea6690f20ad3d8d48b2d2ce9e38e4";
-
     fn keyring(network: SwapNetwork) -> Keyring {
         Keyring::from_seed(&SEED, network, &[0, 1]).unwrap()
     }
@@ -247,57 +243,5 @@ mod tests {
             keyring.branch_pubkey(9),
             Err(KeyringError::UnknownBranch(9))
         ));
-    }
-
-    // A change here breaks every user wallet already in use.
-    #[test]
-    fn keyring_user_wallet_derivation_vectors() {
-        let seed = hex::decode(BIP39_TEST_SEED).unwrap();
-        let swap_id = swap_id();
-
-        let mainnet = Keyring::from_seed(&seed, SwapNetwork::Mainnet, &[0, 1, 2, 3]).unwrap();
-        let signing = mainnet.swap_key(1, &swap_id).unwrap();
-        assert_eq!(
-            hex::encode(mainnet.branch_privkey(0).unwrap().secret_bytes()),
-            "e14f274d16ca0d91031b98b162618061d03930fa381af6d4caf44b01819ab6d4"
-        );
-        assert_eq!(
-            hex::encode(mainnet.branch_pubkey(0).unwrap().serialize()),
-            "02707a62fdacc26ea9b63b1c197906f56ee0180d0bcf1966e1a2da34f5f3a09a9b"
-        );
-        assert_eq!(
-            hex::encode(signing.secret_bytes()),
-            "64aff91bfd58a39f00963638da6c40ddb82052abc62b894845ec5456f3588bf4"
-        );
-        assert_eq!(
-            hex::encode(signing.public_key(secp()).serialize()),
-            "02dfde19a23be257d8cf6c7ca55c8fee3221e55f2f34453fe8350b02938ba82838"
-        );
-        assert_eq!(
-            hex::encode(mainnet.swap_key(2, &swap_id).unwrap().secret_bytes()),
-            "c4b95f771db2ab111c22c41f462c87c59cb3bb7363c8ce9e668c02b68840ca37"
-        );
-        assert_eq!(
-            hex::encode(mainnet.swap_key(3, &swap_id).unwrap().secret_bytes()),
-            "75e7aaa283daca0796ec1b0b18de2bc66ba4b96f6772a7dd2dd672ead8837cdf"
-        );
-
-        let regtest = Keyring::from_seed(&seed, SwapNetwork::Regtest, &[0, 1, 2, 3]).unwrap();
-        assert_eq!(
-            hex::encode(regtest.branch_privkey(0).unwrap().secret_bytes()),
-            "7262788152f6450e0f0b336847e5ed3ea4319e10b793c3a7488a474aa4fbeaae"
-        );
-        assert_eq!(
-            hex::encode(regtest.swap_key(1, &swap_id).unwrap().secret_bytes()),
-            "396a880b5f9084de3cb2fc641e10739752fd90e196c58f9330069174f7c44a17"
-        );
-        assert_eq!(
-            hex::encode(regtest.swap_key(2, &swap_id).unwrap().secret_bytes()),
-            "f82050d0a8fc6c72cb88191dd2041ec71719d4af694bb01637f1390a3f511255"
-        );
-        assert_eq!(
-            hex::encode(regtest.swap_key(3, &swap_id).unwrap().secret_bytes()),
-            "bb5ede6f2bbc0173e9af5b64e4f52d60fbf19c8c119aceb1e89f6a11f460a222"
-        );
     }
 }

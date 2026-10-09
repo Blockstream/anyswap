@@ -11,7 +11,7 @@ use bitcoin::{
 };
 use thiserror::Error;
 
-#[derive(Debug, Error)]
+#[derive(Clone, Debug, Error)]
 pub enum MusigError {
     #[error("invalid pubkey: {0}")]
     InvalidPubkey(String),

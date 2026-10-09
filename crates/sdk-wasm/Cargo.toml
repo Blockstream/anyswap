@@ -1,0 +1,29 @@
+[package]
+name = "anyswap-wasm"
+version.workspace = true
+license.workspace = true
+description = "WASM bindings for the AnySwap client SDK"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+anyswap-sdk = { path = "../sdk", default-features = false, features = ["driver"] }
+bip39 = { workspace = true }
+hex = { workspace = true }
+uuid = { workspace = true }
+wasm-bindgen = "0.2"
+serde = { workspace = true }
+serde-wasm-bindgen = "0.6"
+console_error_panic_hook = "0.1"
+
+# Both getrandom majors in the tree need their browser backend turned on, or they
+# won't compile on wasm32. 0.3 also needs a cfg, set in the root .cargo/config.toml.
+# What the driver's JS bridge needs is wasm32-only too.
+[target.wasm32-unknown-unknown.dependencies]
+async-trait = { workspace = true }
+js-sys = "0.3"
+wasm-bindgen-futures = "0.4"
+getrandom = { version = "0.2", features = ["js"] }
+getrandom_v3 = { package = "getrandom", version = "0.3", features = ["wasm_js"] }

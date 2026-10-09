@@ -1,8 +1,12 @@
 //! HTTP API request and response types shared between the server (plugin) and SDK (client).
+//!
+//! Amounts in sats are 64-bit and cross as decimal strings, so a reader whose
+//! numbers are doubles keeps every bit.
 
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
+use serde_with::{DisplayFromStr, serde_as};
 use tracing::error;
 use uuid::Uuid;
 
@@ -44,17 +48,27 @@ pub struct Policy {
     pub lightning: LightningPolicyResponse,
 }
 
+#[serde_as]
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct FeeEstimate {
+    #[serde_as(as = "DisplayFromStr")]
+    #[cfg_attr(feature = "openapi", schema(value_type = String))]
     pub source: u64,
+    #[serde_as(as = "DisplayFromStr")]
+    #[cfg_attr(feature = "openapi", schema(value_type = String))]
     pub dest: u64,
 }
 
+#[serde_as]
 #[derive(Serialize, Deserialize, Debug)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct LightningPolicyResponse {
+    #[serde_as(as = "DisplayFromStr")]
+    #[cfg_attr(feature = "openapi", schema(value_type = String))]
     pub min_amount: u64,
+    #[serde_as(as = "DisplayFromStr")]
+    #[cfg_attr(feature = "openapi", schema(value_type = String))]
     pub max_amount: u64,
     pub service_ppm: u64,
 }
@@ -90,11 +104,16 @@ pub struct TimeoutResponse {
     pub await_claim_key_reveal_message: u64,
 }
 
+#[serde_as]
 #[derive(Serialize, Deserialize, Debug)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct AssetPolicyResponse {
     pub asset_id: String,
+    #[serde_as(as = "DisplayFromStr")]
+    #[cfg_attr(feature = "openapi", schema(value_type = String))]
     pub min_amount: u64,
+    #[serde_as(as = "DisplayFromStr")]
+    #[cfg_attr(feature = "openapi", schema(value_type = String))]
     pub max_amount: u64,
 }
 
@@ -112,6 +131,7 @@ pub struct WebhookRequest {
     pub hash_swap_id: bool,
 }
 
+#[serde_as]
 #[derive(Serialize, Deserialize, Debug)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct CreateSwapRequest {
@@ -122,7 +142,11 @@ pub struct CreateSwapRequest {
     pub source_asset_id: Option<String>,
     pub dest_chain: Option<Chain>,
     pub dest_asset_id: Option<String>,
+    #[serde_as(as = "DisplayFromStr")]
+    #[cfg_attr(feature = "openapi", schema(value_type = String))]
     pub receive_amount: u64,
+    #[serde_as(as = "DisplayFromStr")]
+    #[cfg_attr(feature = "openapi", schema(value_type = String))]
     pub send_amount: u64,
     /// Optional `GET /v1/info` quote locking the base fee.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -156,6 +180,7 @@ pub struct CreateSwapRequest {
     pub webhook: Option<WebhookRequest>,
 }
 
+#[serde_as]
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct SwapState {
@@ -163,20 +188,32 @@ pub struct SwapState {
     pub swap_id: Uuid,
     pub swap_type: SwapType,
     pub status: String,
+    #[serde_as(as = "DisplayFromStr")]
+    #[cfg_attr(feature = "openapi", schema(value_type = String))]
     pub receive_amount: u64,
+    #[serde_as(as = "DisplayFromStr")]
+    #[cfg_attr(feature = "openapi", schema(value_type = String))]
     pub send_amount: u64,
+    #[serde_as(as = "DisplayFromStr")]
+    #[cfg_attr(feature = "openapi", schema(value_type = String))]
     pub base_fee: u64,
+    #[serde_as(as = "DisplayFromStr")]
+    #[cfg_attr(feature = "openapi", schema(value_type = String))]
     pub service_fee: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde_as(as = "Option<DisplayFromStr>")]
     #[cfg_attr(feature = "openapi", schema(ignore))]
     pub invoice_fee: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde_as(as = "Option<DisplayFromStr>")]
     #[cfg_attr(feature = "openapi", schema(ignore))]
     pub opening_tx_fee: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde_as(as = "Option<DisplayFromStr>")]
     #[cfg_attr(feature = "openapi", schema(ignore))]
     pub claim_tx_fee: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde_as(as = "Option<DisplayFromStr>")]
     #[cfg_attr(feature = "openapi", schema(ignore))]
     pub refund_tx_fee: Option<u64>,
     pub payment_hash: String,

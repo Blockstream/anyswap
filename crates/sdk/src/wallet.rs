@@ -8,13 +8,18 @@
 //!
 //! ## Key derivation
 //!
-//! Keys are derived deterministically from the `swap_id` over a [`Keyring`]:
-//! `SHA-256(xpriv_secret_bytes || swap_id_bytes)`
+//! The BIP39 seed is first domain-separated as `HMAC-SHA512(SEED_TAG, seed)`,
+//! so no BIP32 wallet on the same mnemonic shares a key with this one. A
+//! [`Keyring`] over the result derives the hardened branches
+//! `m/84'/COIN'/<branch>'`, and each per-swap key is
+//! `SHA-256(xpriv_secret_bytes || swap_id_bytes)` on its branch.
 //!
-//! The identity xpub uses branch 0 (`m/84'/COIN'/0'`), swap keys use branch 1
-//! (`m/84'/COIN'/1'`), source and destination blinding keys use branches 2 and 4
-//! (`m/84'/COIN'/{2,4}'`, Liquid only), and preimages use branch 3
-//! (`m/84'/COIN'/3'`). `COIN` is `0` for the Bitcoin main network, `1` otherwise.
+//! Branches 0 and 1 hold the source refund and destination claim keys, 2 and 3
+//! the source and destination blinding keys (Liquid only), 4 the preimages and
+//! 5 the identity key. `COIN` is `0` for the Bitcoin main network, `1`
+//! otherwise. Every role has its own branch because a SwapChain holds both
+//! sides under one `swap_id`, and revealing its source refund key must not give
+//! away its destination claim key.
 //!
 //! Only the mnemonic is needed for recovery - the server holds the full swap
 //! history (query via [`HttpClient::list_swaps`](crate::client::HttpClient::list_swaps)).
@@ -26,17 +31,25 @@ use anyswap_core::{
 };
 use bip39::Mnemonic;
 use bitcoin::{
-    hashes::{Hash, sha256},
+    hashes::{Hash, HashEngine, hmac, sha256, sha512},
     secp256k1::{PublicKey, SecretKey},
 };
 use thiserror::Error;
 use uuid::Uuid;
 
-const BRANCH_XPUB: u32 = 0;
-const BRANCH_KEYS: u32 = 1;
+/// HMAC key that domain-separates the BIP39 seed before any BIP32 derivation.
+///
+/// Fixed by the protocol: together with the mnemonic it *is* the wallet, and
+/// changing it strands every swap made under it. Wallets before `v2` derived
+/// from the untagged seed, where these branches were BIP84 account keys.
+const SEED_TAG: &str = "anyswap/user-wallet/v2";
+
+const BRANCH_SOURCE_REFUND: u32 = 0;
+const BRANCH_DEST_CLAIM: u32 = 1;
 const BRANCH_SOURCE_BLINDING: u32 = 2;
-const BRANCH_PREIMAGES: u32 = 3;
-const BRANCH_DEST_BLINDING: u32 = 4;
+const BRANCH_DEST_BLINDING: u32 = 3;
+const BRANCH_PREIMAGES: u32 = 4;
+const BRANCH_XPUB: u32 = 5;
 
 /// Wallet trait providing per-swap key derivation.
 pub trait SwapWallet {
@@ -50,11 +63,21 @@ pub trait SwapWallet {
     /// Stable pubkey identifying this wallet.
     fn identity_pubkey(&self) -> Result<PublicKey, Self::Error>;
 
-    /// Derives the compressed public key for the given `swap_id`.
-    fn pubkey(&self, swap_id: &Uuid) -> Result<PublicKey, Self::Error>;
+    /// Source refund pubkey: the user's key on a source output the user opens
+    /// (SwapIn, SwapChain), sent to the server as `source_refund_pubkey`.
+    fn source_refund_pubkey(&self, swap_id: &Uuid) -> Result<PublicKey, Self::Error>;
 
-    /// Derives the per-swap signing private key for the given `swap_id`.
-    fn privkey(&self, swap_id: &Uuid) -> Result<SecretKey, Self::Error>;
+    /// Source refund private key: signs the refund, and is revealed to the
+    /// server for a cooperative claim of the source.
+    fn source_refund_privkey(&self, swap_id: &Uuid) -> Result<SecretKey, Self::Error>;
+
+    /// Destination claim pubkey: the user's key on a destination output the
+    /// server opens (SwapOut, SwapChain), sent to the server as
+    /// `dest_claim_pubkey`.
+    fn dest_claim_pubkey(&self, swap_id: &Uuid) -> Result<PublicKey, Self::Error>;
+
+    /// Destination claim private key: signs the claim of the destination.
+    fn dest_claim_privkey(&self, swap_id: &Uuid) -> Result<SecretKey, Self::Error>;
 
     /// Derives the per-swap preimage for the given `swap_id`.
     fn preimage(&self, swap_id: &Uuid) -> Result<[u8; 32], Self::Error>;
@@ -128,16 +151,19 @@ impl Wallet {
 
     /// Restores a wallet from an existing mnemonic.
     pub fn from_mnemonic(mnemonic: &Mnemonic, network: SwapNetwork) -> Result<Self, WalletError> {
-        let seed = mnemonic.to_seed("");
+        let mut engine = hmac::HmacEngine::<sha512::Hash>::new(SEED_TAG.as_bytes());
+        engine.input(&mnemonic.to_seed(""));
+        let seed = hmac::Hmac::<sha512::Hash>::from_engine(engine);
         let keyring = Keyring::from_seed(
-            &seed,
+            seed.as_byte_array(),
             network,
             &[
-                BRANCH_XPUB,
-                BRANCH_KEYS,
+                BRANCH_SOURCE_REFUND,
+                BRANCH_DEST_CLAIM,
                 BRANCH_SOURCE_BLINDING,
-                BRANCH_PREIMAGES,
                 BRANCH_DEST_BLINDING,
+                BRANCH_PREIMAGES,
+                BRANCH_XPUB,
             ],
         )?;
 
@@ -161,12 +187,20 @@ impl SwapWallet for Wallet {
         Ok(self.keyring.branch_pubkey(BRANCH_XPUB)?)
     }
 
-    fn pubkey(&self, swap_id: &Uuid) -> Result<PublicKey, WalletError> {
-        Ok(self.privkey(swap_id)?.public_key(secp()))
+    fn source_refund_pubkey(&self, swap_id: &Uuid) -> Result<PublicKey, WalletError> {
+        Ok(self.source_refund_privkey(swap_id)?.public_key(secp()))
     }
 
-    fn privkey(&self, swap_id: &Uuid) -> Result<SecretKey, WalletError> {
-        Ok(self.keyring.swap_key(BRANCH_KEYS, swap_id)?)
+    fn source_refund_privkey(&self, swap_id: &Uuid) -> Result<SecretKey, WalletError> {
+        Ok(self.keyring.swap_key(BRANCH_SOURCE_REFUND, swap_id)?)
+    }
+
+    fn dest_claim_pubkey(&self, swap_id: &Uuid) -> Result<PublicKey, WalletError> {
+        Ok(self.dest_claim_privkey(swap_id)?.public_key(secp()))
+    }
+
+    fn dest_claim_privkey(&self, swap_id: &Uuid) -> Result<SecretKey, WalletError> {
+        Ok(self.keyring.swap_key(BRANCH_DEST_CLAIM, swap_id)?)
     }
 
     fn preimage(&self, swap_id: &Uuid) -> Result<[u8; 32], WalletError> {
@@ -190,5 +224,57 @@ impl SwapWallet for Wallet {
 
     fn dest_blinding_privkey(&self, swap_id: &Uuid) -> Result<SecretKey, WalletError> {
         Ok(self.keyring.swap_key(BRANCH_DEST_BLINDING, swap_id)?)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const MNEMONIC: &str = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+    const SWAP_ID: &str = "00112233-4455-6677-8899-aabbccddeeff";
+
+    #[test]
+    fn wallet_derivation_vectors() {
+        let mnemonic = Mnemonic::parse(MNEMONIC).unwrap();
+        let swap_id = Uuid::parse_str(SWAP_ID).unwrap();
+        let cases = [
+            (
+                SwapNetwork::Mainnet,
+                [
+                    "17ebb8fbd89e19a204f15db7e7518a64a3faab823fb04f5f9bc8e1bbc1a256e8",
+                    "29ae990149ed4887b62d1e54e6cd4965604f7217a10938c8602c3cb6c5ba813d",
+                    "15c62260b0e89caa0b99a4bcb5dc8e9601484ea89617fa8c02e512d742caf745",
+                    "8531ee614aee023c483953d39f3bc03a0dd687e931023ba9477b12045c442464",
+                    "cc0244bdae5324a247cc8fb6be8a2f07170a5d4d01dd217896cbd7d322264a92",
+                    "0dd90872f6f2a43e856a1ce3bdcc458cdee77754354fc2b1d887a47364d1711f",
+                ],
+            ),
+            (
+                SwapNetwork::Regtest,
+                [
+                    "8672ce4d21634e6a4baaca46036fd56233e5674fd84c0667a8781bc72e62ad61",
+                    "7ab25812b4bd1aa3aea1d8c37a959cae7aafb7c48fc67aa5515e1195eba7890d",
+                    "0e69097622e929757e1fd304df690be4cf8657e3d22e87081da5edab107de51f",
+                    "3c4006334ae84ccd65500bf3582b385a829c85921bcf100496690fc9d924921a",
+                    "20774e9596705e90b6958ce2a54ef4dc91ef7e96f3881bed43fe995a994dea44",
+                    "0b623d5f23fba66869ed5bd40001f49c7c2fdb9a71d4a39b6a838ab59ee7a164",
+                ],
+            ),
+        ];
+
+        for (network, expected) in cases {
+            let wallet = Wallet::from_mnemonic(&mnemonic, network).unwrap();
+            let secret = |key: Result<SecretKey, _>| hex::encode(key.unwrap().secret_bytes());
+            let derived = [
+                wallet.user_id().unwrap(),
+                secret(wallet.source_refund_privkey(&swap_id)),
+                secret(wallet.dest_claim_privkey(&swap_id)),
+                secret(wallet.source_blinding_privkey(&swap_id)),
+                secret(wallet.dest_blinding_privkey(&swap_id)),
+                hex::encode(wallet.preimage(&swap_id).unwrap()),
+            ];
+            assert_eq!(derived, expected, "{network:?}");
+        }
     }
 }

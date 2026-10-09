@@ -57,7 +57,7 @@ when the server cooperates and the CSV path when it does not.
 | Pair info and limits                                          | `driver.quote(source, dest, TargetAmount::Receive(amount))` |
 | A keypair and preimage you create and rotate per swap         | derived by `Wallet` from the mnemonic and the swap's id, internal to the driver |
 | `next_index_to_use`, the key counter you persist              | nothing, keys need no counter                                |
-| WebSocket status events driving your state machine            | `Status` resolved from the chain every pass; the server's label is `server_status()`, display only |
+| WebSocket status events driving your state machine            | `Status` resolved from the chain every pass; the server's label is the record's `server_status`, display only |
 | `advance` / `complete_pay` loops per swap (`lwk_boltz`)       | one `driver.run()` for every stored swap                     |
 | `BtcSwapTx` / `LBtcSwapTx` claim and refund building          | the driver claims and refunds itself                         |
 | `DynStore` encrypted key-value store                          | `SwapStore`, three methods over serde records                |

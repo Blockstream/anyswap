@@ -4,27 +4,32 @@
 use std::collections::HashSet;
 
 use anyswap_core::{
+    PROTOCOL_VERSION,
     api::{CreateSwapRequest, InfoResponse, MAX_SWAP_LIST_LIMIT, SwapListQuery, SwapState},
     auth::{AuthCore, AuthRequest},
     fee, invoice,
-    types::{Chain, NATIVE_ASSET, SwapNetwork, SwapType},
+    types::{
+        Chain, NATIVE_ASSET, SwapInStatus as InStage, SwapNetwork, SwapOutStatus as OutStage,
+        SwapType,
+    },
     utils::validate_user_address,
 };
 use bitcoin::secp256k1::{PublicKey, schnorr::Signature};
 use elements::AssetId;
 use serde::{Deserialize, Serialize};
+use serde_with::{DisplayFromStr, serde_as};
 use uuid::Uuid;
 
 use super::{
-    Driver, MaybeSend, MaybeSync, Swap,
+    Driver, Handle, MaybeSend, MaybeSync,
     error::{DriverError, Refusal},
-    record::{Endpoint, Sent, Status, SwapRecord, Timestamp},
-    tick::{ServerStatus, driven, poll},
+    observe::{driven, poll},
+    record::{Endpoint, Sent, ServerStatus, Status, SwapRecord, Timestamp},
     wallet_error,
 };
 use crate::{
-    swap_in::{SwapIn, SwapInStatus},
-    swap_out::{SwapOut, SwapOutStatus},
+    swap_in::SwapIn,
+    swap_out::SwapOut,
     swap_script::Side,
     wallet::{SwapWallet, SwapWalletExt},
 };
@@ -35,20 +40,25 @@ const LIGHTNING_BLOCK_TIME: u64 = 600;
 /// `GET /v1/info` reduced to two ends and one amount, with the `quote_id`
 /// that locks it. An end is Lightning when its chain is `None`. Both amounts
 /// are binding: the request carries them as they are here.
+#[serde_as]
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Quote {
     pub source_chain: Option<Chain>,
     pub source_asset_id: Option<String>,
     pub dest_chain: Option<Chain>,
     pub dest_asset_id: Option<String>,
+    #[serde_as(as = "DisplayFromStr")]
     pub receive_amount: u64,
+    #[serde_as(as = "DisplayFromStr")]
     pub send_amount: u64,
+    #[serde_as(as = "DisplayFromStr")]
     pub base_fee: u64,
+    #[serde_as(as = "DisplayFromStr")]
     pub service_fee: u64,
+    #[serde_as(as = "DisplayFromStr")]
     pub fee: u64,
     pub quote_id: Uuid,
     pub expires_at: Timestamp,
-    pub(crate) protocol_version: String,
 }
 
 /// Which end of a quote the caller pins: the amount they receive, or the
@@ -73,6 +83,13 @@ pub(crate) fn quote(
         return Err(Refusal::Network {
             expected: network,
             found: info.policy.network,
+        }
+        .into());
+    }
+    if info.policy.protocol_version != PROTOCOL_VERSION {
+        return Err(Refusal::ProtocolVersion {
+            expected: PROTOCOL_VERSION.into(),
+            found: info.policy.protocol_version,
         }
         .into());
     }
@@ -158,21 +175,7 @@ pub(crate) fn quote(
         fee: send_amount - receive_amount,
         quote_id,
         expires_at: now + info.quote_ttl,
-        protocol_version: info.policy.protocol_version,
     })
-}
-
-/// The side, chain and asset a request asks for.
-fn asked(req: &CreateSwapRequest) -> Result<(Side, Chain, &str), Refusal> {
-    let (side, chain, asset) = match (req.source_chain, req.dest_chain) {
-        (Some(chain), None) => (Side::Source, chain, &req.source_asset_id),
-        (None, Some(chain)) => (Side::Dest, chain, &req.dest_asset_id),
-        _ => return Err(Refusal::Malformed("neither a SwapIn nor a SwapOut".into())),
-    };
-    let asset = asset
-        .as_deref()
-        .ok_or_else(|| Refusal::Malformed("no asset".into()))?;
-    Ok((side, chain, asset))
 }
 
 impl<W: SwapWallet + MaybeSend + MaybeSync + 'static> Driver<W> {
@@ -184,9 +187,16 @@ impl<W: SwapWallet + MaybeSend + MaybeSync + 'static> Driver<W> {
         req: &CreateSwapRequest,
         started_at: Timestamp,
         state: SwapState,
-    ) -> Result<(SwapRecord, ServerStatus), DriverError> {
-        let (side, chain, _) = asked(req)?;
-        let cc = &self.chain(chain)?.config;
+    ) -> Result<SwapRecord, DriverError> {
+        let (side, chain, asset) = match (req.source_chain, req.dest_chain) {
+            (Some(chain), None) => (Side::Source, chain, &req.source_asset_id),
+            (None, Some(chain)) => (Side::Dest, chain, &req.dest_asset_id),
+            _ => return Err(Refusal::Malformed("neither a SwapIn nor a SwapOut".into()).into()),
+        };
+        let asset = asset
+            .as_deref()
+            .ok_or_else(|| Refusal::Malformed("no asset".into()))?;
+        let chain_config = &self.chain(chain)?.config;
         let (ctx, config) = (&self.core.ctx, &self.config);
         let swap_type = match side {
             Side::Source => SwapType::SwapIn,
@@ -195,139 +205,173 @@ impl<W: SwapWallet + MaybeSend + MaybeSync + 'static> Driver<W> {
         if state.swap_type != swap_type {
             return Err(Refusal::SwapType(state.swap_type).into());
         }
-        common(req, side, &state)?;
+        common(req, side, chain, asset, &state)?;
 
         let wallet = ctx.wallet();
         let id = &req.swap_id;
         let refused = |e: &dyn std::fmt::Display| Refusal::Wallet(e.to_string());
-        let our_pubkey = wallet.pubkey(id).map_err(|e| refused(&e))?;
         let status = Status::Funding {
             expires_at: started_at + config.funding_timeout.as_secs(),
             cancel_sent: false,
         };
-        let (record, status) = match side {
+        let server_status = Some(state.status.clone());
+        let record = match side {
             Side::Source => {
-                let s = SwapIn::try_from(state).map_err(|e| Refusal::Malformed(e.to_string()))?;
-                if s.chain == Chain::Liquid {
+                let swap =
+                    SwapIn::try_from(state).map_err(|e| Refusal::Malformed(e.to_string()))?;
+                if swap.chain == Chain::Liquid {
                     let ours = wallet.source_blinding_pubkey(id).map_err(|e| refused(&e))?;
-                    blinding(s.user_blinding_pubkey, ours, s.service_blinding_pubkey)?;
+                    blinding(
+                        swap.user_blinding_pubkey,
+                        ours,
+                        swap.service_blinding_pubkey,
+                    )?;
                 }
-                if s.refund_pubkey != our_pubkey {
+                if swap.refund_pubkey != wallet.source_refund_pubkey(id).map_err(|e| refused(&e))? {
                     return Err(Refusal::OurPubkey.into());
                 }
                 let claim_invoice = req.claim_invoice.as_deref().ok_or(Refusal::ClaimInvoice)?;
-                if s.claim_invoice != claim_invoice {
+                if swap.claim_invoice != claim_invoice {
                     return Err(Refusal::ClaimInvoice.into());
                 }
-                if s.payment_hash != invoice::payment_hash(claim_invoice).map_err(invoice_error)? {
+                let invoice_hash = invoice::payment_hash(claim_invoice).map_err(invoice_error)?;
+                if swap.payment_hash != invoice_hash {
                     return Err(Refusal::PaymentHash.into());
                 }
                 let msat = invoice::amount_msat(claim_invoice).map_err(invoice_error)?;
-                if Some(msat) != s.receive_amount.checked_mul(1000) {
+                if Some(msat) != swap.receive_amount.checked_mul(1000) {
                     return Err(Refusal::Invoice("amount is not the receive amount".into()).into());
                 }
                 let room = config.funding_timeout.as_secs()
-                    + (u64::from(cc.min_confs) + 1) * cc.block_time;
+                    + (u64::from(chain_config.min_confs) + 1) * chain_config.block_time;
                 if invoice::expiry_at(claim_invoice).map_err(invoice_error)? < started_at + room {
                     return Err(Refusal::Invoice("expires too soon".into()).into());
                 }
-                csv_in_range(s.csv, 1, cc.max_refund_csv)?;
+                csv_in_range(swap.csv, 1, chain_config.max_refund_csv)?;
                 let refund_address = req.user_refund_address.as_deref();
-                if s.refund_address.as_deref() != refund_address {
+                if swap.refund_address.as_deref() != refund_address {
                     return Err(Refusal::Address("differs from the one submitted".into()).into());
                 }
                 if let Some(refund_address) = refund_address {
                     validate_user_address(
                         "user_refund_address",
-                        s.chain,
+                        swap.chain,
                         refund_address,
                         ctx.network(),
                     )
                     .map_err(|e| Refusal::Address(e.to_string()))?;
                 }
-                let record = SwapRecord {
+                SwapRecord {
                     version: SwapRecord::VERSION,
-                    swap_id: s.swap_id,
-                    payment_hash: s.payment_hash,
-                    source: Endpoint::on_chain(s.terms(), refund_address.map(str::to_owned)),
-                    dest: Endpoint::lightning(s.claim_invoice),
-                    send_amount: s.send_amount,
-                    receive_amount: s.receive_amount,
+                    swap_id: swap.swap_id,
+                    payment_hash: swap.payment_hash,
+                    source: Endpoint::on_chain(swap.terms(), refund_address.map(str::to_owned)),
+                    dest: Endpoint::lightning(swap.claim_invoice),
+                    send_amount: swap.send_amount,
+                    receive_amount: swap.receive_amount,
+                    base_fee: swap.base_fee,
+                    service_fee: swap.service_fee,
                     started_at,
                     status,
-                    committed_at: None,
+                    funds: Vec::new(),
+                    ended_at: None,
                     preimage: None,
                     sent: Sent::default(),
-                };
-                (record, ServerStatus::In(s.status))
+                    server_status,
+                    server_cancel: None,
+                }
             }
             Side::Dest => {
-                let s = SwapOut::try_from(state).map_err(|e| Refusal::Malformed(e.to_string()))?;
-                if s.chain == Chain::Liquid {
+                let swap =
+                    SwapOut::try_from(state).map_err(|e| Refusal::Malformed(e.to_string()))?;
+                if swap.chain == Chain::Liquid {
                     let ours = wallet.dest_blinding_pubkey(id).map_err(|e| refused(&e))?;
-                    blinding(s.user_blinding_pubkey, ours, s.service_blinding_pubkey)?;
+                    blinding(
+                        swap.user_blinding_pubkey,
+                        ours,
+                        swap.service_blinding_pubkey,
+                    )?;
                 }
-                if s.claim_pubkey != our_pubkey {
+                if swap.claim_pubkey != wallet.dest_claim_pubkey(id).map_err(|e| refused(&e))? {
                     return Err(Refusal::OurPubkey.into());
                 }
                 let claim_address = req
                     .user_claim_address
                     .as_deref()
                     .ok_or_else(|| Refusal::Address("none submitted".into()))?;
-                if s.claim_address != claim_address {
+                if swap.claim_address != claim_address {
                     return Err(Refusal::Address("differs from the one submitted".into()).into());
                 }
-                validate_user_address("user_claim_address", s.chain, claim_address, ctx.network())
+                let network = ctx.network();
+                validate_user_address("user_claim_address", swap.chain, claim_address, network)
                     .map_err(|e| Refusal::Address(e.to_string()))?;
-                if s.payment_hash != wallet.payment_hash(id).map_err(|e| refused(&e))? {
+                if swap.payment_hash != wallet.payment_hash(id).map_err(|e| refused(&e))? {
                     return Err(Refusal::PaymentHash.into());
                 }
-                let inv = &s.claim_invoice;
-                if invoice::payment_hash(inv).map_err(invoice_error)? != s.payment_hash {
+                let hold_invoice = &swap.claim_invoice;
+                let invoice_hash = invoice::payment_hash(hold_invoice).map_err(invoice_error)?;
+                if invoice_hash != swap.payment_hash {
                     return Err(Refusal::Invoice("payment hash is not ours".into()).into());
                 }
-                let msat = invoice::amount_msat(inv).map_err(invoice_error)?;
-                if Some(msat) != s.send_amount.checked_mul(1000) {
+                let msat = invoice::amount_msat(hold_invoice).map_err(invoice_error)?;
+                if Some(msat) != swap.send_amount.checked_mul(1000) {
                     return Err(Refusal::Invoice("amount is not the send amount".into()).into());
                 }
-                if invoice::network(inv).map_err(invoice_error)? != ctx.network() {
+                if invoice::network(hold_invoice).map_err(invoice_error)? != network {
                     return Err(Refusal::Invoice("wrong network".into()).into());
                 }
-                if invoice::expiry_at(inv).map_err(invoice_error)? <= started_at {
+                if invoice::expiry_at(hold_invoice).map_err(invoice_error)? <= started_at {
                     return Err(Refusal::Invoice("expired".into()).into());
                 }
-                let cltv = invoice::min_final_cltv_expiry_delta(inv).map_err(invoice_error)?;
-                let hold = (u64::from(s.csv) + u64::from(cc.max_htlc_hold)) * cc.block_time;
+                let cltv =
+                    invoice::min_final_cltv_expiry_delta(hold_invoice).map_err(invoice_error)?;
+                let hold = (u64::from(swap.csv) + u64::from(chain_config.max_htlc_hold))
+                    * chain_config.block_time;
                 if cltv.saturating_mul(LIGHTNING_BLOCK_TIME) > hold {
                     return Err(Refusal::Invoice("holds the payment past dest_csv".into()).into());
                 }
-                csv_in_range(s.csv, cc.min_confs + cc.claim_margin, 0xFFFF)?;
-                let terms = s.terms();
-                let record = SwapRecord {
+                csv_in_range(
+                    swap.csv,
+                    chain_config.min_confs + chain_config.claim_margin,
+                    0xFFFF,
+                )?;
+                let terms = swap.terms();
+                SwapRecord {
                     version: SwapRecord::VERSION,
-                    swap_id: s.swap_id,
-                    payment_hash: s.payment_hash,
-                    source: Endpoint::lightning(s.claim_invoice),
-                    dest: Endpoint::on_chain(terms, Some(s.claim_address)),
-                    send_amount: s.send_amount,
-                    receive_amount: s.receive_amount,
+                    swap_id: swap.swap_id,
+                    payment_hash: swap.payment_hash,
+                    source: Endpoint::lightning(swap.claim_invoice),
+                    dest: Endpoint::on_chain(terms, Some(swap.claim_address)),
+                    send_amount: swap.send_amount,
+                    receive_amount: swap.receive_amount,
+                    base_fee: swap.base_fee,
+                    service_fee: swap.service_fee,
                     started_at,
                     status,
-                    committed_at: None,
+                    funds: Vec::new(),
+                    ended_at: None,
                     preimage: None,
                     sent: Sent::default(),
-                };
-                (record, ServerStatus::Out(s.status))
+                    server_status,
+                    server_cancel: None,
+                }
             }
         };
         ctx.script(&record.terms(side)?)?;
-        Ok((record, status))
+        Ok(record)
     }
 }
 
 /// The checks both directions share, on the wire form so one function covers
-/// both.
-fn common(req: &CreateSwapRequest, side: Side, state: &SwapState) -> Result<(), Refusal> {
+/// both. `asked_chain` and `asked_asset` are what the request asks for on
+/// `side`.
+fn common(
+    req: &CreateSwapRequest,
+    side: Side,
+    asked_chain: Chain,
+    asked_asset: &str,
+    state: &SwapState,
+) -> Result<(), Refusal> {
     if state.protocol_version != req.protocol_version {
         return Err(Refusal::ProtocolVersion {
             expected: req.protocol_version.clone(),
@@ -337,7 +381,6 @@ fn common(req: &CreateSwapRequest, side: Side, state: &SwapState) -> Result<(), 
     if state.swap_id != req.swap_id {
         return Err(Refusal::SwapId(state.swap_id));
     }
-    let (_, asked_chain, asked_asset) = asked(req)?;
     let (chain, asset) = match side {
         Side::Source => (state.source_chain, state.source_asset.as_deref()),
         Side::Dest => (state.dest_chain, state.dest_asset.as_deref()),
@@ -398,7 +441,7 @@ fn invoice_error(e: invoice::InvoiceError) -> Refusal {
 #[derive(Debug, Default)]
 pub struct RestoreReport {
     pub restored: Vec<Uuid>,
-    /// With the check each failed; `Unsigned` unless `trust_unsigned` is set.
+    /// With the check each failed.
     pub failed: Vec<(Uuid, DriverError)>,
 }
 
@@ -438,59 +481,13 @@ fn signed(
     Ok((req, started_at))
 }
 
-/// The request the server's report implies, for a swap it holds no signed one
-/// for. The terms are then its word, checked against each other and our keys.
-fn reported(state: &SwapState, user_id: String) -> Result<CreateSwapRequest, Refusal> {
-    let mut req = CreateSwapRequest {
-        protocol_version: state.protocol_version.clone(),
-        swap_id: state.swap_id,
-        user_id,
-        source_chain: None,
-        source_asset_id: None,
-        dest_chain: None,
-        dest_asset_id: None,
-        receive_amount: state.receive_amount,
-        send_amount: state.send_amount,
-        quote_id: None,
-        claim_invoice: None,
-        source_refund_pubkey: None,
-        source_blinding_pubkey: None,
-        dest_claim_pubkey: None,
-        dest_blinding_pubkey: None,
-        user_claim_address: None,
-        user_refund_address: None,
-        payment_hash: None,
-        webhook: None,
-    };
-    match state.swap_type {
-        SwapType::SwapIn => {
-            req.source_chain = state.source_chain;
-            req.source_asset_id = state.source_asset.clone();
-            req.claim_invoice = state.claim_invoice.clone();
-            req.source_refund_pubkey = state.source_refund_pubkey.clone();
-            req.source_blinding_pubkey = state.source_user_blinding_pubkey.clone();
-            req.user_refund_address = state.user_refund_address.clone();
-        }
-        SwapType::SwapOut => {
-            req.dest_chain = state.dest_chain;
-            req.dest_asset_id = state.dest_asset.clone();
-            req.dest_claim_pubkey = state.dest_claim_pubkey.clone();
-            req.dest_blinding_pubkey = state.dest_user_blinding_pubkey.clone();
-            req.user_claim_address = state.user_claim_address.clone();
-            req.payment_hash = Some(state.payment_hash.clone());
-        }
-        other => return Err(Refusal::SwapType(other)),
-    }
-    Ok(req)
-}
-
 impl<W: SwapWallet + MaybeSend + MaybeSync + 'static> Driver<W> {
-    /// Rebuilds one swap from our own signed request, held by the server, or
-    /// with `trust_unsigned` from its report when it holds none. A record
-    /// already stored is returned as is.
-    pub async fn restore(&self, swap_id: Uuid) -> Result<Swap<W>, DriverError> {
+    /// Rebuilds one swap from our own signed request, held by the server. It is
+    /// `Restoring` until its first pass, which the loop makes, or `step`. A
+    /// record already stored is returned as is.
+    pub async fn restore(&self, swap_id: Uuid) -> Result<Handle<W>, DriverError> {
         if let Some(record) = self.core.store.load(&swap_id).await? {
-            return Swap::new(self.clone(), record, None);
+            return Handle::new(self.clone(), &record);
         }
         let state = self.core.client.get_swap(swap_id).await?;
         if state.swap_id != swap_id {
@@ -500,10 +497,11 @@ impl<W: SwapWallet + MaybeSend + MaybeSync + 'static> Driver<W> {
     }
 
     /// `restore` from a report already fetched with its `create_request_*`.
-    async fn restore_state(&self, state: SwapState) -> Result<Swap<W>, DriverError> {
+    async fn restore_state(&self, state: SwapState) -> Result<Handle<W>, DriverError> {
         let swap_id = state.swap_id;
+        let _guard = self.lock(swap_id).await;
         if let Some(record) = self.core.store.load(&swap_id).await? {
-            return Swap::new(self.clone(), record, None);
+            return Handle::new(self.clone(), &record);
         }
         let wallet = self.core.ctx.wallet();
         let (req, started_at) = match (
@@ -515,51 +513,49 @@ impl<W: SwapWallet + MaybeSend + MaybeSync + 'static> Driver<W> {
                 let pubkey = wallet.identity_pubkey().map_err(wallet_error)?;
                 signed(swap_id, body, timestamp, signature, &pubkey)?
             }
-            _ if self.config.trust_unsigned => {
-                let user_id = wallet.user_id().map_err(wallet_error)?;
-                (reported(&state, user_id)?, state.created_at)
-            }
             _ => return Err(DriverError::Unsigned(swap_id)),
         };
-        let (mut record, status) = self.accept(&req, started_at, state.clone())?;
+        let mut record = self.accept(&req, started_at, state.clone())?;
 
-        match &status {
-            ServerStatus::In(
-                SwapInStatus::AwaitClaimTxConfirmation { .. } | SwapInStatus::Claimed { .. },
-            ) => record.sent.refund_key = true,
-            ServerStatus::Out(SwapOutStatus::Claimed { .. }) => record.sent.preimage = true,
-            ServerStatus::In(SwapInStatus::Canceled { .. })
-            | ServerStatus::Out(SwapOutStatus::Canceled { .. }) => record.sent.cancel = true,
+        match record.server_status() {
+            Some(ServerStatus::In(InStage::AwaitClaimTxConfirmation | InStage::Claimed)) => {
+                record.sent.refund_key = true;
+            }
+            Some(ServerStatus::In(InStage::Canceled) | ServerStatus::Out(OutStage::Canceled)) => {
+                record.sent.cancel = true;
+            }
             _ => {}
         }
         let terms = driven(&record)?;
+        // A swap that ended before the restore is watched from when it ended.
+        if record
+            .server_status()
+            .is_some_and(|status| status.is_terminal())
+        {
+            record.ended_at = Some(state.transitioned_at);
+        }
         let server = poll(&terms, state);
         record.endpoint_mut(terms.side).server_privkey = server.key;
         record.preimage = server.preimage;
+        record.server_cancel = server.cancel;
+        record.status = Status::Restoring;
 
         self.core.store.save(&record).await?;
-        Swap::new(self.clone(), record, Some(status))
+        self.signal(swap_id);
+        Handle::new(self.clone(), &record)
     }
 
-    /// Restores every swap the server lists under `query` that the store
-    /// lacks. The filters are the caller's; `user_id`, `limit` and `offset`
-    /// are the driver's.
-    pub async fn restore_all(
-        &self,
-        mut query: SwapListQuery,
-    ) -> Result<RestoreReport, DriverError> {
-        let stored: HashSet<Uuid> = self
-            .core
-            .store
-            .list()
-            .await?
-            .into_iter()
-            .map(|record| record.swap_id)
-            .collect();
-        query.user_id = self.core.ctx.wallet().user_id().map_err(wallet_error)?;
-        query.limit = MAX_SWAP_LIST_LIMIT;
-        query.offset = 0;
-        query.with_create_request = true;
+    /// Restores every swap the server lists for this wallet that the store
+    /// lacks, page by page.
+    pub async fn restore_all(&self) -> Result<RestoreReport, DriverError> {
+        let stored: HashSet<Uuid> = self.core.store.list().await?.into_iter().collect();
+        let mut query = SwapListQuery {
+            user_id: self.core.ctx.wallet().user_id().map_err(wallet_error)?,
+            limit: MAX_SWAP_LIST_LIMIT,
+            offset: 0,
+            with_create_request: true,
+            ..SwapListQuery::default()
+        };
 
         let mut report = RestoreReport::default();
         loop {
@@ -581,201 +577,5 @@ impl<W: SwapWallet + MaybeSend + MaybeSync + 'static> Driver<W> {
             }
         }
         Ok(report)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use serde_json::json;
-
-    use super::*;
-
-    fn info() -> InfoResponse {
-        serde_json::from_value(json!({
-            "online": true,
-            "policy": {
-                "protocol_version": "1",
-                "network": "regtest",
-                "invoice_expiry": 3600,
-                "chain": {
-                    "bitcoin": {
-                        "source_csv": 144,
-                        "dest_csv": 144,
-                        "confs": 1,
-                        "block_time": 600,
-                        "timeouts": {
-                            "await_opening_tx": 3600,
-                            "await_claim_key_reveal_message": 600,
-                        },
-                        "service_ppm": 4_000,
-                        "min_base_fee_multiplier": 6,
-                        "asset": {
-                            "native": {
-                                "asset_id": NATIVE_ASSET,
-                                "min_amount": 10_000,
-                                "max_amount": 1_000_000,
-                            },
-                        },
-                    },
-                },
-                "lightning": {
-                    "min_amount": 10_000,
-                    "max_amount": 1_000_000,
-                    "service_ppm": 2_000,
-                },
-            },
-            "fee_estimates": { "bitcoin": { "source": 1_000, "dest": 2_000 } },
-            "quote_id": Uuid::from_u128(7),
-            "quote_ttl": 60,
-        }))
-        .unwrap()
-    }
-
-    fn swap_out_quote(target: TargetAmount) -> Result<Quote, DriverError> {
-        quote(
-            info(),
-            SwapNetwork::Regtest,
-            None,
-            None,
-            Some(Chain::Bitcoin),
-            target,
-            0,
-        )
-    }
-
-    fn request(send_amount: u64) -> CreateSwapRequest {
-        serde_json::from_value(json!({
-            "protocol_version": "1",
-            "swap_id": Uuid::from_u128(1),
-            "user_id": "user",
-            "dest_chain": "bitcoin",
-            "dest_asset_id": NATIVE_ASSET,
-            "receive_amount": 250_001,
-            "send_amount": send_amount,
-        }))
-        .unwrap()
-    }
-
-    fn state(send_amount: u64, service_fee: u64) -> SwapState {
-        serde_json::from_value(json!({
-            "protocol_version": "1",
-            "swap_id": Uuid::from_u128(1),
-            "swap_type": "SwapOut",
-            "status": "AwaitClaimInvoicePay",
-            "receive_amount": 250_001,
-            "send_amount": send_amount,
-            "base_fee": 2_000,
-            "service_fee": service_fee,
-            "payment_hash": "00".repeat(32),
-            "transitioned_at": 0,
-            "created_at": 0,
-            "dest_chain": "bitcoin",
-            "dest_asset": NATIVE_ASSET,
-        }))
-        .unwrap()
-    }
-
-    #[test]
-    fn quote_prices_either_end_as_the_server_accepts_it() {
-        for target in [
-            TargetAmount::Receive(250_000),
-            TargetAmount::Receive(249_999),
-            TargetAmount::Send(253_001),
-            TargetAmount::Send(252_999),
-        ] {
-            let q = swap_out_quote(target).expect("in range");
-            let price = |amount| fee::min_send_for_receive(amount, 4_000, 2_000).unwrap();
-            assert!(price(q.receive_amount) <= q.send_amount, "{target:?}");
-            assert!(q.send_amount < price(q.receive_amount + 1), "{target:?}");
-            assert_eq!(q.fee, q.send_amount - q.receive_amount, "{target:?}");
-            assert_eq!(q.base_fee + q.service_fee, q.fee, "{target:?}");
-        }
-    }
-
-    #[test]
-    fn quote_pinned_by_the_send_amount_keeps_the_rounding_satoshi() {
-        let q = swap_out_quote(TargetAmount::Send(252_999)).unwrap();
-        assert_eq!(
-            (q.receive_amount, q.send_amount, q.base_fee, q.service_fee),
-            (249_999, 252_999, 2_000, 1_000)
-        );
-    }
-
-    #[test]
-    fn quote_reports_the_range_in_the_pinned_end() {
-        for target in [
-            TargetAmount::Receive(11_999),
-            TargetAmount::Receive(1_000_001),
-        ] {
-            assert!(matches!(
-                swap_out_quote(target),
-                Err(DriverError::AmountOutOfRange {
-                    min: 12_000,
-                    max: 1_000_000
-                })
-            ));
-        }
-        for target in [
-            TargetAmount::Send(1_999),
-            TargetAmount::Send(14_047),
-            TargetAmount::Send(1_006_001),
-        ] {
-            assert!(matches!(
-                swap_out_quote(target),
-                Err(DriverError::AmountOutOfRange {
-                    min: 14_048,
-                    max: 1_006_000
-                })
-            ));
-        }
-        assert_eq!(
-            swap_out_quote(TargetAmount::Send(14_048))
-                .unwrap()
-                .receive_amount,
-            12_000
-        );
-        assert_eq!(
-            swap_out_quote(TargetAmount::Send(1_006_000))
-                .unwrap()
-                .receive_amount,
-            1_000_000
-        );
-    }
-
-    #[test]
-    fn target_amount_reads_the_wasm_shape() {
-        assert_eq!(
-            serde_json::from_value::<TargetAmount>(json!({ "receive": 5 })).unwrap(),
-            TargetAmount::Receive(5)
-        );
-        assert_eq!(
-            serde_json::from_value::<TargetAmount>(json!({ "send": 5 })).unwrap(),
-            TargetAmount::Send(5)
-        );
-    }
-
-    #[test]
-    fn common_accepts_a_breakdown_of_our_send_amount() {
-        assert_eq!(
-            common(&request(253_001), Side::Dest, &state(253_001, 1_000)),
-            Ok(())
-        );
-    }
-
-    #[test]
-    fn common_refuses_a_send_amount_that_is_not_ours_or_does_not_add_up() {
-        for (send_amount, service_fee) in [(253_002, 1_001), (253_001, 999)] {
-            assert!(matches!(
-                common(
-                    &request(253_001),
-                    Side::Dest,
-                    &state(send_amount, service_fee)
-                ),
-                Err(Refusal::SendAmount {
-                    expected: 253_001,
-                    ..
-                })
-            ));
-        }
     }
 }

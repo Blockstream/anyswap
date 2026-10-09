@@ -1,14 +1,17 @@
 //! A driver that runs a swap to completion against the chain, taking from the
 //! server only what the chain can verify: its cancel report, its preimage and
-//! its key. The loop is in `tick.rs`, what fixes a swap's terms in
-//! `accept.rs`, what survives a crash in `record.rs`, the knobs in
-//! `config.rs`, and what an integrator implements for the chain in `chain.rs`
-//! and for the server in `server.rs`. See `docs/proposals/driver.md`.
+//! its key. The loop is in `tick.rs`, what a pass reads in `observe.rs`, what
+//! it decides in `decide/`, what fixes a swap's terms in `accept.rs`, what
+//! survives a crash in `record.rs`, the knobs in `config.rs`, and what an
+//! integrator implements for the chain in `chain.rs` and for the server in
+//! `server.rs`. See `docs/proposals/driver.md`.
 
 mod accept;
 mod chain;
 mod config;
+mod decide;
 mod error;
+mod observe;
 mod record;
 mod rt;
 mod server;
@@ -17,40 +20,40 @@ mod tick;
 use std::{
     collections::HashMap,
     future::Future,
-    ops::{Deref, DerefMut},
     sync::{Arc, Mutex, OnceLock, Weak},
     time::Duration,
 };
 
 use anyswap_core::{
+    PROTOCOL_VERSION,
     api::{CancelRequest, CreateSwapRequest},
     invoice,
     types::{Chain, SwapType},
     utils::{now, validate_user_address},
 };
-use tokio::sync::broadcast::{self, error::RecvError};
+use async_trait::async_trait;
+use tokio::sync::{
+    broadcast::{self, error::RecvError},
+    watch,
+};
 use uuid::Uuid;
 
-use self::tick::ServerStatus as Reported;
 pub use self::{
     accept::{Quote, RestoreReport, TargetAmount},
     chain::{ChainClient, ChainError, HistoryTx},
     config::{ChainConfig, Config},
+    decide::{Action, Decision, Message, Path, Spend, decide, funds},
     error::{DriverError, Refusal},
+    observe::{Observed, Output, Report, Server, Spender},
     record::{
-        Endpoint, Height, MemoryStore, Sent, Status, StoreError, SwapRecord, SwapStore, Timestamp,
+        CancelReason, Endpoint, Fund, FundState, Height, MemoryStore, Sent, ServerCancel,
+        ServerStatus, Status, StoreError, SwapRecord, SwapStore, Timestamp,
     },
     rt::{MaybeSend, MaybeSync, spawn},
     server::{ServerClient, Signals},
-    tick::{
-        Action, Decision, Message, Observed, Output, Path, Server, ServerStatus, Spend, Spender,
-        decide,
-    },
 };
 use crate::{
     context::SwapContext,
-    swap_in::SwapInStatus,
-    swap_out::SwapOutStatus,
     swap_script::Side,
     wallet::{SwapWallet, SwapWalletExt},
 };
@@ -70,16 +73,33 @@ pub(crate) struct Core<W: SwapWallet> {
     client: Arc<dyn ServerClient>,
     store: Arc<dyn SwapStore>,
     locks: Mutex<HashMap<Uuid, Arc<tokio::sync::Mutex<()>>>>,
-    errors: Mutex<HashMap<Uuid, Arc<DriverError>>>,
+    errors: Mutex<HashMap<Uuid, DriverError>>,
     signals: broadcast::Sender<Uuid>,
-    updates: broadcast::Sender<Swap<W>>,
+    updates: broadcast::Sender<Handle<W>>,
     /// The push channel, until the listener takes it.
     source: Mutex<Option<Box<dyn Signals>>>,
     listener: OnceLock<()>,
+    /// Where `run` is; `stop` and the loop move it.
+    state: watch::Sender<RunState>,
+}
+
+/// Where `run` is: never started, looping, told to stop and finishing its
+/// pass, or exited. Stopped is final.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RunState {
+    Idle,
+    Running,
+    Stopping,
+    Stopped,
+}
+
+/// Resolves once the driver is `Stopped`, or gone.
+async fn stopped(state: &mut watch::Receiver<RunState>) {
+    let _ = state.wait_for(|state| *state == RunState::Stopped).await;
 }
 
 /// Drives every swap in its store. Cheap to clone; every clone shares the
-/// store, the server client and the loop's channels.
+/// store, the server client, the loop's channels and its run state.
 pub struct Driver<W: SwapWallet> {
     core: Arc<Core<W>>,
     chains: HashMap<Chain, Registered>,
@@ -88,12 +108,14 @@ pub struct Driver<W: SwapWallet> {
 }
 
 /// Where funds land when a swap is created without an address.
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 pub trait Destinations: MaybeSend + MaybeSync {
     /// The address a SwapOut on `chain` claims to; asked at creation.
-    fn claim_address(&self, chain: Chain) -> String;
+    async fn claim_address(&self, chain: Chain) -> Result<String, String>;
     /// The address a SwapIn on `chain` refunds to; asked once per broadcast,
     /// only with something spendable under the script.
-    fn refund_address(&self, chain: Chain) -> String;
+    async fn refund_address(&self, chain: Chain) -> Result<String, String>;
 }
 
 impl<W: SwapWallet> Clone for Driver<W> {
@@ -124,6 +146,7 @@ impl<W: SwapWallet + MaybeSend + MaybeSync + 'static> Driver<W> {
                 updates: broadcast::channel(256).0,
                 source: Mutex::new(None),
                 listener: OnceLock::new(),
+                state: watch::channel(RunState::Idle).0,
             }),
             chains: HashMap::new(),
             config: Config::default(),
@@ -208,7 +231,7 @@ impl<W: SwapWallet + MaybeSend + MaybeSync + 'static> Driver<W> {
         quote: Quote,
         claim_invoice: String,
         refund_address: Option<String>,
-    ) -> Result<SwapInHandle<W>, DriverError> {
+    ) -> Result<Handle<W>, DriverError> {
         let chain = self.check_quote(&quote, SwapType::SwapIn)?;
         let msat =
             invoice::amount_msat(&claim_invoice).map_err(|e| Refusal::Invoice(e.to_string()))?;
@@ -228,7 +251,7 @@ impl<W: SwapWallet + MaybeSend + MaybeSync + 'static> Driver<W> {
         let swap_id = Uuid::new_v4();
         let liquid = chain == Chain::Liquid;
         let req = CreateSwapRequest {
-            protocol_version: quote.protocol_version,
+            protocol_version: PROTOCOL_VERSION.into(),
             swap_id,
             user_id: wallet.user_id().map_err(wallet_error)?,
             source_chain: quote.source_chain,
@@ -239,7 +262,12 @@ impl<W: SwapWallet + MaybeSend + MaybeSync + 'static> Driver<W> {
             send_amount: quote.send_amount,
             quote_id: Some(quote.quote_id),
             claim_invoice: Some(claim_invoice),
-            source_refund_pubkey: Some(wallet.pubkey(&swap_id).map_err(wallet_error)?.to_string()),
+            source_refund_pubkey: Some(
+                wallet
+                    .source_refund_pubkey(&swap_id)
+                    .map_err(wallet_error)?
+                    .to_string(),
+            ),
             source_blinding_pubkey: liquid
                 .then(|| {
                     wallet
@@ -257,10 +285,8 @@ impl<W: SwapWallet + MaybeSend + MaybeSync + 'static> Driver<W> {
         };
         let started_at = now();
         self.core.client.create_swap(&req).await?;
-        let (record, status) = self.adopt(&req, started_at).await?;
-        Ok(SwapInHandle {
-            handle: Handle::new(self.clone(), record, Some(status)),
-        })
+        let record = self.adopt(&req, started_at).await?;
+        Handle::new(self.clone(), &record)
     }
 
     /// Creates a SwapOut against `quote` paying `claim_address`, or the
@@ -270,11 +296,16 @@ impl<W: SwapWallet + MaybeSend + MaybeSync + 'static> Driver<W> {
         &self,
         quote: Quote,
         claim_address: Option<String>,
-    ) -> Result<SwapOutHandle<W>, DriverError> {
+    ) -> Result<Handle<W>, DriverError> {
         let chain = self.check_quote(&quote, SwapType::SwapOut)?;
-        let claim_address = claim_address
-            .or_else(|| self.destinations.as_ref().map(|d| d.claim_address(chain)))
-            .ok_or_else(|| Refusal::Address("none given".into()))?;
+        let claim_address = match (claim_address, &self.destinations) {
+            (Some(address), _) => address,
+            (None, Some(destinations)) => destinations
+                .claim_address(chain)
+                .await
+                .map_err(DriverError::Destination)?,
+            (None, None) => return Err(Refusal::Address("none given".into()).into()),
+        };
         validate_user_address(
             "user_claim_address",
             chain,
@@ -286,7 +317,7 @@ impl<W: SwapWallet + MaybeSend + MaybeSync + 'static> Driver<W> {
         let swap_id = Uuid::new_v4();
         let liquid = chain == Chain::Liquid;
         let req = CreateSwapRequest {
-            protocol_version: quote.protocol_version,
+            protocol_version: PROTOCOL_VERSION.into(),
             swap_id,
             user_id: wallet.user_id().map_err(wallet_error)?,
             source_chain: quote.source_chain,
@@ -299,7 +330,12 @@ impl<W: SwapWallet + MaybeSend + MaybeSync + 'static> Driver<W> {
             claim_invoice: None,
             source_refund_pubkey: None,
             source_blinding_pubkey: None,
-            dest_claim_pubkey: Some(wallet.pubkey(&swap_id).map_err(wallet_error)?.to_string()),
+            dest_claim_pubkey: Some(
+                wallet
+                    .dest_claim_pubkey(&swap_id)
+                    .map_err(wallet_error)?
+                    .to_string(),
+            ),
             dest_blinding_pubkey: liquid
                 .then(|| wallet.dest_blinding_pubkey(&swap_id).map(|k| k.to_string()))
                 .transpose()
@@ -313,60 +349,110 @@ impl<W: SwapWallet + MaybeSend + MaybeSync + 'static> Driver<W> {
         };
         let started_at = now();
         self.core.client.create_swap(&req).await?;
-        let (record, status) = self.adopt(&req, started_at).await?;
-        Ok(SwapOutHandle {
-            handle: Handle::new(self.clone(), record, Some(status)),
-        })
+        let record = self.adopt(&req, started_at).await?;
+        Handle::new(self.clone(), &record)
     }
 
     /// The stored swap, as a fresh handle.
-    pub async fn get(&self, swap_id: Uuid) -> Result<Option<Swap<W>>, DriverError> {
+    pub async fn get(&self, swap_id: Uuid) -> Result<Option<Handle<W>>, DriverError> {
         self.core
             .store
             .load(&swap_id)
             .await?
-            .map(|record| Swap::new(self.clone(), record, None))
+            .map(|record| Handle::new(self.clone(), &record))
             .transpose()
     }
 
-    /// Drives every swap in the store that is not quiet, forever. Spawn it.
+    /// Drives every swap in the store that is not quiet until `stop`. Spawn
+    /// it. Every pass re-reads the store, so a swap created, restored or
+    /// cancelled is driven from the next pass on, and creating one wakes the
+    /// loop. A second call while the loop runs, or any call after `stop`,
+    /// returns at once.
     pub fn run(&self) -> impl Future<Output = ()> + MaybeSend + 'static {
         let driver = self.clone();
         async move {
+            let started = driver.core.state.send_if_modified(|state| match state {
+                RunState::Idle => {
+                    *state = RunState::Running;
+                    true
+                }
+                _ => false,
+            });
+            if !started {
+                return;
+            }
             driver.ensure_listener();
             let mut signals = driver.core.signals.subscribe();
-            loop {
+            let mut state = driver.core.state.subscribe();
+            while *state.borrow() == RunState::Running {
                 driver.sweep().await;
                 tokio::select! {
                     _ = rt::sleep(driver.config.poll_interval) => {}
                     _ = signals.recv() => {}
+                    _ = state.changed() => {}
                 }
             }
+            driver.core.state.send_replace(RunState::Stopped);
         }
     }
 
-    /// Every swap a pass changed, from `run` and from `step`.
+    /// Ends `run` after the pass in flight, if any; a loop never started is
+    /// stopped outright. Final: a stopped driver does not run again, and its
+    /// `Updates` end once drained. Handles still `step` and `advance`.
+    pub fn stop(&self) {
+        self.core.state.send_if_modified(|state| match state {
+            RunState::Idle => {
+                *state = RunState::Stopped;
+                true
+            }
+            RunState::Running => {
+                *state = RunState::Stopping;
+                true
+            }
+            RunState::Stopping | RunState::Stopped => false,
+        });
+    }
+
+    /// Resolves once `run` has exited and no pass is in flight, so the
+    /// store is no longer written to.
+    pub async fn wait_stopped(&self) {
+        stopped(&mut self.core.state.subscribe()).await;
+    }
+
+    /// Where `run` is now.
+    pub fn state(&self) -> RunState {
+        *self.core.state.borrow()
+    }
+
+    /// Every swap a pass saw change, on chain or at the server, from `run`
+    /// and from `step`.
     pub fn subscribe(&self) -> Updates<W> {
-        Updates(self.core.updates.subscribe())
+        Updates {
+            updates: self.core.updates.subscribe(),
+            state: self.core.state.subscribe(),
+        }
     }
 
     async fn sweep(&self) {
-        let Ok(records) = self.core.store.list().await else {
+        let Ok(ids) = self.core.store.list().await else {
             return;
         };
         let now = now();
-        for record in records {
-            if record.status.is_quiet(now) {
-                continue;
+        let window = self.config.refund_timeout.as_secs();
+        for id in ids {
+            if *self.core.state.borrow() != RunState::Running {
+                return;
             }
-            let id = record.swap_id;
             let _guard = self.lock(id).await;
             let Ok(Some(mut record)) = self.core.store.load(&id).await else {
                 continue;
             };
+            if record.is_quiet(now, window, self.destinations.is_some()) {
+                continue;
+            }
             if let Err(error) = self.tick(&mut record).await {
-                self.core.errors.lock().unwrap().insert(id, Arc::new(error));
-                self.emit(record, None);
+                self.core.errors.lock().unwrap().insert(id, error);
+                self.emit(&record);
             }
         }
     }
@@ -375,12 +461,13 @@ impl<W: SwapWallet + MaybeSend + MaybeSync + 'static> Driver<W> {
         &self,
         req: &CreateSwapRequest,
         started_at: Timestamp,
-    ) -> Result<(SwapRecord, Reported), DriverError> {
+    ) -> Result<SwapRecord, DriverError> {
         let state = self.core.client.get_swap(req.swap_id).await?;
         match self.accept(req, started_at, state) {
-            Ok((record, status)) => {
+            Ok(record) => {
                 self.core.store.save(&record).await?;
-                Ok((record, status))
+                self.signal(record.swap_id);
+                Ok(record)
             }
             Err(error) => {
                 let cancel = CancelRequest {
@@ -423,9 +510,18 @@ impl<W: SwapWallet + MaybeSend + MaybeSync + 'static> Driver<W> {
         lock.lock_owned().await
     }
 
-    fn emit(&self, record: SwapRecord, server: Option<Reported>) {
-        if let Ok(swap) = Swap::new(self.clone(), record, server) {
-            let _ = self.core.updates.send(swap);
+    /// The stored record, or `Unknown`.
+    async fn load(&self, swap_id: Uuid) -> Result<SwapRecord, DriverError> {
+        self.core
+            .store
+            .load(&swap_id)
+            .await?
+            .ok_or(DriverError::Unknown(swap_id))
+    }
+
+    fn emit(&self, record: &SwapRecord) {
+        if let Ok(handle) = Handle::new(self.clone(), record) {
+            let _ = self.core.updates.send(handle);
         }
     }
 
@@ -439,6 +535,7 @@ impl<W: SwapWallet + MaybeSend + MaybeSync + 'static> Driver<W> {
                     Arc::downgrade(&self.core),
                     source,
                     self.config.poll_interval,
+                    self.core.state.subscribe(),
                 ));
             }
         });
@@ -464,14 +561,19 @@ impl<W: SwapWallet + MaybeSend + MaybeSync + 'static> Driver<W> {
 }
 
 /// Forwards each id the channel yields to the loops, waiting `retry` while
-/// it is down, until the driver is dropped.
+/// it is down, until the driver is stopped or dropped.
 async fn listen<W: SwapWallet + MaybeSend + MaybeSync + 'static>(
     core: Weak<Core<W>>,
     mut source: Box<dyn Signals>,
     retry: Duration,
+    mut state: watch::Receiver<RunState>,
 ) {
     loop {
-        match source.next().await {
+        let next = tokio::select! {
+            next = source.next() => next,
+            _ = stopped(&mut state) => return,
+        };
+        match next {
             Some(id) => {
                 let Some(core) = core.upgrade() else {
                     return;
@@ -482,7 +584,10 @@ async fn listen<W: SwapWallet + MaybeSend + MaybeSync + 'static>(
                 if core.strong_count() == 0 {
                     return;
                 }
-                rt::sleep(retry).await;
+                tokio::select! {
+                    _ = rt::sleep(retry) => {}
+                    _ = stopped(&mut state) => return,
+                }
             }
         }
     }
@@ -496,100 +601,112 @@ pub enum Cancellation {
     TooLate,
 }
 
-/// A swap bound to its driver: the record as this handle last saw it, and
-/// the calls that act on it.
+/// A swap bound to its driver: its id and type, and the calls that act on
+/// it. It keeps no copy of the swap, so every read is the store's or the
+/// driver's newest.
 pub struct Handle<W: SwapWallet> {
     driver: Driver<W>,
-    record: SwapRecord,
-    server: Option<ServerStatus>,
-    error: Option<Arc<DriverError>>,
+    swap_id: Uuid,
+    swap_type: SwapType,
 }
 
 impl<W: SwapWallet> Clone for Handle<W> {
     fn clone(&self) -> Self {
         Self {
             driver: self.driver.clone(),
-            record: self.record.clone(),
-            server: self.server.clone(),
-            error: self.error.clone(),
+            swap_id: self.swap_id,
+            swap_type: self.swap_type,
         }
     }
 }
 
 impl<W: SwapWallet + MaybeSend + MaybeSync + 'static> Handle<W> {
-    fn new(driver: Driver<W>, record: SwapRecord, server: Option<ServerStatus>) -> Self {
-        let error = driver
+    fn new(driver: Driver<W>, record: &SwapRecord) -> Result<Self, DriverError> {
+        let swap_type = match record.swap_type()? {
+            swap_type @ (SwapType::SwapIn | SwapType::SwapOut) => swap_type,
+            other => return Err(DriverError::Unsupported(other)),
+        };
+        Ok(Self {
+            driver,
+            swap_id: record.swap_id,
+            swap_type,
+        })
+    }
+
+    pub fn swap_id(&self) -> Uuid {
+        self.swap_id
+    }
+
+    pub fn swap_type(&self) -> SwapType {
+        self.swap_type
+    }
+
+    /// The stored record, as the last pass left it.
+    pub async fn record(&self) -> Result<SwapRecord, DriverError> {
+        self.driver.load(self.swap_id).await
+    }
+
+    pub async fn status(&self) -> Result<Status, DriverError> {
+        Ok(self.record().await?.status)
+    }
+
+    /// The error of this swap's last failing tick under `run`, `None` after a
+    /// working one.
+    pub fn error(&self) -> Option<DriverError> {
+        self.driver
             .core
             .errors
             .lock()
             .unwrap()
-            .get(&record.swap_id)
-            .cloned();
-        Self {
-            driver,
-            record,
-            server,
-            error,
-        }
+            .get(&self.swap_id)
+            .cloned()
     }
 
-    pub fn swap_id(&self) -> Uuid {
-        self.record.swap_id
+    /// SwapIn: the deposit address; `record().send_amount` goes here.
+    pub async fn address(&self) -> Result<String, DriverError> {
+        self.expect(SwapType::SwapIn)?;
+        let record = self.record().await?;
+        let terms = record.terms(Side::Source)?;
+        let script = self.driver.core.ctx.script(&terms)?;
+        Ok(script.address())
     }
 
-    pub fn record(&self) -> &SwapRecord {
-        &self.record
-    }
-
-    pub fn status(&self) -> &Status {
-        &self.record.status
-    }
-
-    /// The server's status as the last pass read it. Shown, never decided on.
-    pub fn server_status(&self) -> Option<&ServerStatus> {
-        self.server.as_ref()
-    }
-
-    /// The error of this swap's last failing tick under `run`, `None` after a
-    /// working one; read when the handle was made.
-    pub fn error(&self) -> Option<&DriverError> {
-        self.error.as_deref()
+    /// SwapOut: the hold invoice to pay; `record().send_amount` is its amount.
+    pub async fn claim_invoice(&self) -> Result<String, DriverError> {
+        self.expect(SwapType::SwapOut)?;
+        let mut record = self.record().await?;
+        record
+            .source
+            .invoice
+            .take()
+            .ok_or_else(|| record.missing("source invoice"))
     }
 
     /// One pass, now.
-    pub async fn step(&mut self) -> Result<Status, DriverError> {
-        let id = self.record.swap_id;
+    pub async fn step(&self) -> Result<Status, DriverError> {
+        let id = self.swap_id;
         let _guard = self.driver.lock(id).await;
-        self.record = self
-            .driver
-            .core
-            .store
-            .load(&id)
-            .await?
-            .ok_or(DriverError::Unknown(id))?;
-        self.server = self.driver.tick(&mut self.record).await?;
-        self.error = None;
-        Ok(self.record.status.clone())
+        let mut record = self.driver.load(id).await?;
+        self.driver.tick(&mut record).await?;
+        Ok(record.status)
     }
 
     /// Waits for a server notification or `poll_interval`, whichever comes
     /// first, then makes one pass.
-    pub async fn advance(&mut self) -> Result<Status, DriverError> {
-        self.driver.wait_for(self.record.swap_id).await;
+    pub async fn advance(&self) -> Result<Status, DriverError> {
+        self.driver.wait_for(self.swap_id).await;
         self.step().await
     }
 
-    pub async fn cancel(&mut self) -> Result<Cancellation, DriverError> {
-        let id = self.record.swap_id;
+    pub async fn cancel(&self) -> Result<Cancellation, DriverError> {
+        let id = self.swap_id;
         let _guard = self.driver.lock(id).await;
-        if let Some(record) = self.driver.core.store.load(&id).await? {
-            self.record = record;
-        }
+        let mut record = self.driver.load(id).await?;
         let open = matches!(
-            self.record.status,
-            Status::Funding { .. } | Status::Confirming { .. }
+            record.status,
+            Status::Restoring | Status::Funding { .. } | Status::Confirming { .. }
         );
-        if !open || self.record.committed_at.is_some() {
+        if !open || record.sent.preimage {
             return Ok(Cancellation::TooLate);
         }
         let req = CancelRequest {
@@ -597,171 +714,61 @@ impl<W: SwapWallet + MaybeSend + MaybeSync + 'static> Handle<W> {
         };
         match self.driver.core.client.cancel(id, &req).await {
             Ok(()) => {
-                self.record.sent.cancel = true;
-                self.driver.core.store.save(&self.record).await?;
+                record.sent.cancel = true;
+                self.driver.core.store.save(&record).await?;
                 Ok(Cancellation::Requested)
             }
             Err(e) if e.transition_rejected() => Ok(Cancellation::TooLate),
             Err(e) => Err(e.into()),
         }
     }
-}
 
-/// A SwapIn: what the user must deposit, and where.
-pub struct SwapInHandle<W: SwapWallet> {
-    handle: Handle<W>,
-}
-
-impl<W: SwapWallet + MaybeSend + MaybeSync + 'static> SwapInHandle<W> {
-    /// The deposit address; `record().send_amount` goes here.
-    pub fn address(&self) -> Result<String, DriverError> {
-        let terms = self.handle.record.terms(Side::Source)?;
-        let script = self.handle.driver.core.ctx.script(&terms)?;
-        Ok(script.address())
+    /// SwapIn: what under the script is ours, as the last pass left it.
+    pub async fn funds(&self) -> Result<Vec<Fund>, DriverError> {
+        self.expect(SwapType::SwapIn)?;
+        Ok(self.record().await?.funds)
     }
 
-    pub fn server_status(&self) -> Option<&SwapInStatus> {
-        match self.handle.server.as_ref()? {
-            ServerStatus::In(status) => Some(status),
-            ServerStatus::Out(_) => None,
-        }
-    }
-
-    /// Takes every output that is ours, spendable and worth its fee to
-    /// `destination`. `None` when there is nothing to spend yet.
+    /// SwapIn: one pass that refunds every `Refundable` fund to
+    /// `destination`, returning the refund's txid. `None` when nothing is
+    /// refundable yet.
     pub async fn refund(&self, destination: &str) -> Result<Option<String>, DriverError> {
-        let id = self.record.swap_id;
+        self.expect(SwapType::SwapIn)?;
+        let id = self.swap_id;
         let _guard = self.driver.lock(id).await;
-        let record = self
-            .driver
-            .core
-            .store
-            .load(&id)
-            .await?
-            .ok_or(DriverError::Unknown(id))?;
-        self.driver.refund(&record, destination).await
-    }
-}
-
-/// A SwapOut: the hold invoice the user must pay.
-pub struct SwapOutHandle<W: SwapWallet> {
-    handle: Handle<W>,
-}
-
-impl<W: SwapWallet + MaybeSend + MaybeSync + 'static> SwapOutHandle<W> {
-    /// The hold invoice to pay; `record().send_amount` is its amount.
-    pub fn claim_invoice(&self) -> &str {
-        self.handle
-            .record
-            .source
-            .invoice
-            .as_deref()
-            .unwrap_or_default()
+        let mut record = self.driver.load(id).await?;
+        self.driver.refund(&mut record, destination).await
     }
 
-    pub fn server_status(&self) -> Option<&SwapOutStatus> {
-        match self.handle.server.as_ref()? {
-            ServerStatus::Out(status) => Some(status),
-            ServerStatus::In(_) => None,
+    fn expect(&self, swap_type: SwapType) -> Result<(), DriverError> {
+        if self.swap_type == swap_type {
+            Ok(())
+        } else {
+            Err(DriverError::WrongSwapType)
         }
     }
 }
 
-pub enum Swap<W: SwapWallet> {
-    In(SwapInHandle<W>),
-    Out(SwapOutHandle<W>),
+/// Every swap a pass saw change, on chain or at the server, as `run` and
+/// `step` produce them, plus a handle for every failing tick under `run`.
+pub struct Updates<W: SwapWallet> {
+    updates: broadcast::Receiver<Handle<W>>,
+    state: watch::Receiver<RunState>,
 }
-
-impl<W: SwapWallet + MaybeSend + MaybeSync + 'static> Swap<W> {
-    fn new(
-        driver: Driver<W>,
-        record: SwapRecord,
-        server: Option<ServerStatus>,
-    ) -> Result<Self, DriverError> {
-        let swap_type = record.swap_type()?;
-        let handle = Handle::new(driver, record, server);
-        match swap_type {
-            SwapType::SwapIn => Ok(Self::In(SwapInHandle { handle })),
-            SwapType::SwapOut => Ok(Self::Out(SwapOutHandle { handle })),
-            other => Err(DriverError::Unsupported(other)),
-        }
-    }
-}
-
-macro_rules! deref_handle {
-    ($type:ident, |$self:ident| $handle:expr, |$self_mut:ident| $handle_mut:expr) => {
-        impl<W: SwapWallet> Deref for $type<W> {
-            type Target = Handle<W>;
-
-            fn deref(&$self) -> &Handle<W> {
-                $handle
-            }
-        }
-
-        impl<W: SwapWallet> DerefMut for $type<W> {
-            fn deref_mut(&mut $self_mut) -> &mut Handle<W> {
-                $handle_mut
-            }
-        }
-
-        impl<W: SwapWallet> Clone for $type<W> {
-            fn clone(&self) -> Self {
-                self.clone_handle()
-            }
-        }
-    };
-}
-
-deref_handle!(SwapInHandle, |self| &self.handle, |self| &mut self.handle);
-deref_handle!(SwapOutHandle, |self| &self.handle, |self| &mut self.handle);
-deref_handle!(
-    Swap,
-    |self| match self {
-        Swap::In(swap) => &swap.handle,
-        Swap::Out(swap) => &swap.handle,
-    },
-    |self| match self {
-        Swap::In(swap) => &mut swap.handle,
-        Swap::Out(swap) => &mut swap.handle,
-    }
-);
-
-impl<W: SwapWallet> SwapInHandle<W> {
-    fn clone_handle(&self) -> Self {
-        Self {
-            handle: self.handle.clone(),
-        }
-    }
-}
-
-impl<W: SwapWallet> SwapOutHandle<W> {
-    fn clone_handle(&self) -> Self {
-        Self {
-            handle: self.handle.clone(),
-        }
-    }
-}
-
-impl<W: SwapWallet> Swap<W> {
-    fn clone_handle(&self) -> Self {
-        match self {
-            Self::In(swap) => Self::In(swap.clone()),
-            Self::Out(swap) => Self::Out(swap.clone()),
-        }
-    }
-}
-
-/// Every swap a pass changed, as `run` and `step` produce them, plus a
-/// handle for every failing tick under `run`.
-pub struct Updates<W: SwapWallet>(broadcast::Receiver<Swap<W>>);
 
 impl<W: SwapWallet> Updates<W> {
-    pub async fn next(&mut self) -> Option<Swap<W>> {
+    /// The next changed swap, or `None` once the driver is stopped and
+    /// drained, or gone.
+    pub async fn next(&mut self) -> Option<Handle<W>> {
         loop {
-            match self.0.recv().await {
-                Ok(swap) => return Some(swap),
-                Err(RecvError::Lagged(_)) => continue,
-                Err(RecvError::Closed) => return None,
+            tokio::select! {
+                biased;
+                swap = self.updates.recv() => match swap {
+                    Ok(swap) => return Some(swap),
+                    Err(RecvError::Lagged(_)) => continue,
+                    Err(RecvError::Closed) => return None,
+                },
+                _ = stopped(&mut self.state) => return None,
             }
         }
     }
