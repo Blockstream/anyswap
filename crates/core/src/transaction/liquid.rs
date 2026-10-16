@@ -41,6 +41,10 @@ pub const REFUND_VSIZE: u64 = 250;
 /// change output `elementsd` adds alongside the swap output.
 pub const OPENING_VSIZE: u64 = 350;
 
+/// The most inputs a builder spends: the destination's surjection proof covers
+/// every input, and secp256k1-zkp takes at most this many.
+pub const MAX_INPUTS: usize = 256;
+
 /// Cooperative MuSig2 keypath spend, used for both claim and refund. All inputs
 /// must be UTXOs of the same `script`, unblindable by the shared `blinding_key`.
 #[allow(clippy::too_many_arguments)]
@@ -196,8 +200,8 @@ pub fn refund_by_csv(
 }
 
 /// Unblinds and validates every batch input against the shared blinding key and
-/// the swap script, rejecting an empty set or a duplicate outpoint. Returns the
-/// per-input secrets in input order.
+/// the swap script, rejecting an empty set, more than [`MAX_INPUTS`] or a
+/// duplicate outpoint. Returns the per-input secrets in input order.
 fn resolve_inputs(
     inputs: &[(OutPoint, TxOut)],
     blinding_key: &SecretKey,
@@ -207,6 +211,12 @@ fn resolve_inputs(
 ) -> Result<Vec<TxOutSecrets>, TxError> {
     if inputs.is_empty() {
         return Err(TxError::NoInputs);
+    }
+    if inputs.len() > MAX_INPUTS {
+        return Err(TxError::TooManyInputs {
+            count: inputs.len(),
+            max: MAX_INPUTS,
+        });
     }
     if inputs.len() > 1 {
         let mut seen = HashSet::with_capacity(inputs.len());
@@ -1109,6 +1119,39 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(err, TxError::DuplicateInput(_)));
+    }
+
+    #[test]
+    fn spends_at_most_max_inputs() {
+        let fixture = fixture();
+        let inputs: Vec<(OutPoint, TxOut)> = (0..=MAX_INPUTS as u32)
+            .map(|vout| {
+                (
+                    OutPoint::new(fixture.outpoint.txid, vout),
+                    fixture.prevout.clone(),
+                )
+            })
+            .collect();
+        let refund = |inputs: &[(OutPoint, TxOut)]| {
+            refund_by_csv(
+                inputs,
+                &blinding_key(&fixture),
+                &fixture.script,
+                &fixture.refund_key,
+                &fixture.destination,
+                fixture.fee_rate,
+                fixture.genesis_hash,
+                AssetId::LIQUID_BTC,
+            )
+        };
+
+        let tx = refund(&inputs[..MAX_INPUTS]).unwrap();
+        assert_eq!(tx.input.len(), MAX_INPUTS);
+        let err = refund(&inputs).unwrap_err();
+        assert!(matches!(
+            err,
+            TxError::TooManyInputs { count, max: MAX_INPUTS } if count == MAX_INPUTS + 1
+        ));
     }
 
     #[test]

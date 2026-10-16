@@ -22,10 +22,11 @@ use uuid::Uuid;
 
 use super::{
     Driver, Handle, MaybeSend, MaybeSync,
+    decide::funding_deadline,
     error::{DriverError, Refusal},
     observe::{driven, poll},
     record::{Endpoint, Sent, ServerStatus, Status, SwapRecord, Timestamp},
-    wallet_error,
+    rt, wallet_error,
 };
 use crate::{
     swap_in::SwapIn,
@@ -33,9 +34,6 @@ use crate::{
     swap_script::Side,
     wallet::{SwapWallet, SwapWalletExt},
 };
-
-/// Lightning counts CLTV in Bitcoin blocks whatever chain the opening is on.
-const LIGHTNING_BLOCK_TIME: u64 = 600;
 
 /// `GET /v1/info` reduced to two ends and one amount, with the `quote_id`
 /// that locks it. An end is Lightning when its chain is `None`. Both amounts
@@ -210,8 +208,8 @@ impl<W: SwapWallet + MaybeSend + MaybeSync + 'static> Driver<W> {
         let wallet = ctx.wallet();
         let id = &req.swap_id;
         let refused = |e: &dyn std::fmt::Display| Refusal::Wallet(e.to_string());
-        let status = Status::Funding {
-            expires_at: started_at + config.funding_timeout.as_secs(),
+        let funding = |bolt11: Option<&str>| Status::Funding {
+            expires_at: funding_deadline(started_at, bolt11, config),
             cancel_sent: false,
         };
         let server_status = Some(state.status.clone());
@@ -272,7 +270,7 @@ impl<W: SwapWallet + MaybeSend + MaybeSync + 'static> Driver<W> {
                     base_fee: swap.base_fee,
                     service_fee: swap.service_fee,
                     started_at,
-                    status,
+                    status: funding(None),
                     funds: Vec::new(),
                     ended_at: None,
                     preimage: None,
@@ -325,16 +323,15 @@ impl<W: SwapWallet + MaybeSend + MaybeSync + 'static> Driver<W> {
                 }
                 let cltv =
                     invoice::min_final_cltv_expiry_delta(hold_invoice).map_err(invoice_error)?;
-                let hold = (u64::from(swap.csv) + u64::from(chain_config.max_htlc_hold))
-                    * chain_config.block_time;
-                if cltv.saturating_mul(LIGHTNING_BLOCK_TIME) > hold {
-                    return Err(Refusal::Invoice("holds the payment past dest_csv".into()).into());
+                if cltv > u64::from(config.max_htlc_hold) {
+                    return Err(Refusal::Invoice("holds the payment too long".into()).into());
                 }
                 csv_in_range(
                     swap.csv,
                     chain_config.min_confs + chain_config.claim_margin,
                     0xFFFF,
                 )?;
+                let status = funding(Some(hold_invoice));
                 let terms = swap.terms();
                 SwapRecord {
                     version: SwapRecord::VERSION,
@@ -445,15 +442,21 @@ pub struct RestoreReport {
     pub failed: Vec<(Uuid, DriverError)>,
 }
 
-/// Our own create request, out of the copy the server kept, once its
-/// signature verifies against our identity key and its body names `swap_id`.
+/// Our own create request, out of the copy the server kept in `state`, once
+/// its signature verifies against our identity key and its body names the
+/// swap.
 fn signed(
-    swap_id: Uuid,
-    body: &str,
-    timestamp: i64,
-    signature: &str,
+    state: &SwapState,
     pubkey: &PublicKey,
 ) -> Result<(CreateSwapRequest, Timestamp), DriverError> {
+    let swap_id = state.swap_id;
+    let (Some(body), Some(timestamp), Some(signature)) = (
+        state.create_request_body.as_deref(),
+        state.create_request_timestamp,
+        state.create_request_signature.as_deref(),
+    ) else {
+        return Err(DriverError::Unsigned(swap_id));
+    };
     let signature = hex::decode(signature)
         .ok()
         .and_then(|bytes| Signature::from_slice(&bytes).ok())
@@ -489,7 +492,8 @@ impl<W: SwapWallet + MaybeSend + MaybeSync + 'static> Driver<W> {
         if let Some(record) = self.core.store.load(&swap_id).await? {
             return Handle::new(self.clone(), &record);
         }
-        let state = self.core.client.get_swap(swap_id).await?;
+        let limit = self.config.server_timeout;
+        let state = rt::bounded(limit, self.core.client.get_swap(swap_id)).await?;
         if state.swap_id != swap_id {
             return Err(Refusal::SwapId(state.swap_id).into());
         }
@@ -498,23 +502,27 @@ impl<W: SwapWallet + MaybeSend + MaybeSync + 'static> Driver<W> {
 
     /// `restore` from a report already fetched with its `create_request_*`.
     async fn restore_state(&self, state: SwapState) -> Result<Handle<W>, DriverError> {
+        let pubkey = self
+            .core
+            .ctx
+            .wallet()
+            .identity_pubkey()
+            .map_err(wallet_error)?;
+        let request = signed(&state, &pubkey)?;
+        self.restore_signed(state, request).await
+    }
+
+    /// `restore` once the request in `state` verifies.
+    async fn restore_signed(
+        &self,
+        state: SwapState,
+        (req, started_at): (CreateSwapRequest, Timestamp),
+    ) -> Result<Handle<W>, DriverError> {
         let swap_id = state.swap_id;
         let _guard = self.lock(swap_id).await;
         if let Some(record) = self.core.store.load(&swap_id).await? {
             return Handle::new(self.clone(), &record);
         }
-        let wallet = self.core.ctx.wallet();
-        let (req, started_at) = match (
-            state.create_request_body.as_deref(),
-            state.create_request_timestamp,
-            state.create_request_signature.as_deref(),
-        ) {
-            (Some(body), Some(timestamp), Some(signature)) => {
-                let pubkey = wallet.identity_pubkey().map_err(wallet_error)?;
-                signed(swap_id, body, timestamp, signature, &pubkey)?
-            }
-            _ => return Err(DriverError::Unsigned(swap_id)),
-        };
         let mut record = self.accept(&req, started_at, state.clone())?;
 
         match record.server_status() {
@@ -527,12 +535,13 @@ impl<W: SwapWallet + MaybeSend + MaybeSync + 'static> Driver<W> {
             _ => {}
         }
         let terms = driven(&record)?;
-        // A swap that ended before the restore is watched from when it ended.
+        // A swap that ended before the restore is watched from when it ended,
+        // never from later than now.
         if record
             .server_status()
             .is_some_and(|status| status.is_terminal())
         {
-            record.ended_at = Some(state.transitioned_at);
+            record.ended_at = Some(state.transitioned_at.min(anyswap_core::utils::now()));
         }
         let server = poll(&terms, state);
         record.endpoint_mut(terms.side).server_privkey = server.key;
@@ -546,11 +555,15 @@ impl<W: SwapWallet + MaybeSend + MaybeSync + 'static> Driver<W> {
     }
 
     /// Restores every swap the server lists for this wallet that the store
-    /// lacks, page by page.
+    /// lacks, page by page. Paging goes on only while a page brings a swap
+    /// not listed before whose request we signed, so a server cannot keep it
+    /// going on repeated or made up entries.
     pub async fn restore_all(&self) -> Result<RestoreReport, DriverError> {
         let stored: HashSet<Uuid> = self.core.store.list().await?.into_iter().collect();
+        let wallet = self.core.ctx.wallet();
+        let pubkey = wallet.identity_pubkey().map_err(wallet_error)?;
         let mut query = SwapListQuery {
-            user_id: self.core.ctx.wallet().user_id().map_err(wallet_error)?,
+            user_id: wallet.user_id().map_err(wallet_error)?,
             limit: MAX_SWAP_LIST_LIMIT,
             offset: 0,
             with_create_request: true,
@@ -558,21 +571,34 @@ impl<W: SwapWallet + MaybeSend + MaybeSync + 'static> Driver<W> {
         };
 
         let mut report = RestoreReport::default();
+        let mut seen = HashSet::new();
+        let limit = self.config.server_timeout;
         loop {
-            let page = self.core.client.list_swaps(&query).await?;
+            let page = rt::bounded(limit, self.core.client.list_swaps(&query)).await?;
             query.offset += page.swaps.len() as u32;
-            let last = !page.pagination.has_next || page.swaps.is_empty();
+            let mut ours = false;
             for state in page.swaps {
                 let id = state.swap_id;
-                if stored.contains(&id) {
+                if !seen.insert(id) {
                     continue;
                 }
-                match self.restore_state(state).await {
+                if stored.contains(&id) {
+                    ours = true;
+                    continue;
+                }
+                let restored = match signed(&state, &pubkey) {
+                    Ok(request) => {
+                        ours = true;
+                        self.restore_signed(state, request).await
+                    }
+                    Err(e) => Err(e),
+                };
+                match restored {
                     Ok(_) => report.restored.push(id),
                     Err(e) => report.failed.push((id, e)),
                 }
             }
-            if last {
+            if !page.pagination.has_next || !ours {
                 break;
             }
         }

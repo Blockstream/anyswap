@@ -21,6 +21,9 @@ upgrade old stores only if they kept that self-describing form. A table of
 JSON blobs keyed by `swap_id` is enough. The bundled `MemoryStore` is for
 tests.
 
+Give each store one driver. In a browser, tabs over one store take turns on
+each swap through a Web Lock.
+
 Restarting is then nothing at all: build the same driver over the same store
 and spawn `run`. Every status is resolved from the chain on the next pass,
 so a record is never stale, and messages already delivered are remembered in

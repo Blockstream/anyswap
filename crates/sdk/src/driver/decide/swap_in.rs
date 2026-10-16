@@ -40,7 +40,7 @@ pub(super) fn decide(
 /// No deposit yet. Past the funding deadline the driver asks the server to
 /// cancel, and the swap ends once the server's key arrives with its answer.
 fn funding(record: &SwapRecord, observed: &Observed, config: &Config) -> Decision {
-    let expires_at = funding_deadline(record, config);
+    let expires_at = funding_deadline(record.started_at, None, config);
     let send_cancel = observed.now >= expires_at && !record.sent.cancel;
     Decision {
         status: Status::Funding {
@@ -70,6 +70,7 @@ fn completed(record: &SwapRecord, opening: &Output) -> Decision {
         status: Status::Completed {
             opening: opening.utxo.txid.clone(),
             payout: opening.spend.as_ref().map(|spend| spend.txid.clone()),
+            fee: None,
         },
         action: (!record.sent.refund_key).then_some(Action::Send(Message::RefundKey)),
     }
@@ -128,15 +129,15 @@ fn state(
         Some(spend) if !our_refund(record, spend) => return None,
         Some(spend) if spend.height.is_none() => FundState::Refunding {
             txid: spend.txid.clone(),
+            fee: spend.fee,
         },
         Some(spend) => FundState::Refunded {
             txid: spend.txid.clone(),
+            fee: spend.fee,
         },
-        None if record.refund_keypath().is_none() && observed.confs(output.height) < terms.csv => {
-            FundState::Locked {
-                at: output.height.map(|height| height + terms.csv),
-            }
-        }
+        None if record.locked(terms.csv, observed.confs(output.height)) => FundState::Locked {
+            at: output.height.map(|height| height + terms.csv),
+        },
         None if refund_fee.is_none_or(|fee| output.value <= fee) => FundState::Dust,
         None => FundState::Refundable,
     })

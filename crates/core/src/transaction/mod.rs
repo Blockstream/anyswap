@@ -33,6 +33,9 @@ pub enum TxError {
     #[error("duplicate input {0}")]
     DuplicateInput(String),
 
+    #[error("{count} inputs exceed the limit of {max}")]
+    TooManyInputs { count: usize, max: usize },
+
     #[error("input amount overflow")]
     InputOverflow,
 

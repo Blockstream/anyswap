@@ -299,8 +299,8 @@ impl SwapHandle {
         to_js(&status)
     }
 
-    /// `Requested` closes the swap once the server confirms; `TooLate` means
-    /// the payment landed first and the swap continues.
+    /// `Requested`: the swap is canceled, or closes once the server confirms;
+    /// `TooLate` means the payment landed first and the swap continues.
     pub async fn cancel(&self) -> Result<String, DriverError> {
         let outcome = match self.inner.cancel().await? {
             Cancellation::Requested => "Requested",
@@ -315,8 +315,9 @@ impl SwapHandle {
         to_js(&self.inner.funds().await?)
     }
 
-    /// SwapIn: one pass that refunds every `Refundable` fund to
-    /// `destination`. The txid, or `undefined` with nothing refundable yet.
+    /// SwapIn: one pass that refunds the `Refundable` funds to
+    /// `destination`. The txid, or `undefined` with nothing refundable yet or
+    /// an earlier refund still `Refunding`.
     pub async fn refund(&self, destination: String) -> Result<Option<String>, DriverError> {
         Ok(self.inner.refund(&destination).await?)
     }

@@ -4,6 +4,7 @@
 mod swap_in;
 mod swap_out;
 
+use anyswap_core::invoice;
 use bitcoin::secp256k1::SecretKey;
 
 use super::{
@@ -87,6 +88,15 @@ pub fn funds(
     }
 }
 
-fn funding_deadline(record: &SwapRecord, config: &Config) -> Timestamp {
-    record.started_at + config.funding_timeout.as_secs()
+/// When a swap with nothing on chain cancels: `funding_timeout` after
+/// `started_at`, or sooner when `bolt11`, the invoice the user pays, expires.
+pub(super) fn funding_deadline(
+    started_at: Timestamp,
+    bolt11: Option<&str>,
+    config: &Config,
+) -> Timestamp {
+    let window = started_at + config.funding_timeout.as_secs();
+    bolt11
+        .and_then(|bolt11| invoice::expiry_at(bolt11).ok())
+        .map_or(window, |expiry| expiry.min(window))
 }

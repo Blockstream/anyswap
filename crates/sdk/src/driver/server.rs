@@ -1,7 +1,7 @@
 //! The server as the driver sees it: the calls it makes over the API, and an
 //! optional push channel that only says which swap to read sooner.
 
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use anyswap_core::api::{
     CancelRequest, CreateSwapRequest, InfoResponse, RevealClaimRequest, RevealPreimageRequest,
@@ -10,8 +10,14 @@ use anyswap_core::api::{
 use async_trait::async_trait;
 use uuid::Uuid;
 
-use super::rt::{MaybeSend, MaybeSync};
+use super::rt::{MaybeSend, MaybeSync, Timeout};
 use crate::client::{ClientError, HttpClient};
+
+impl Timeout for ClientError {
+    fn timeout(limit: Duration) -> Self {
+        Self::Transport(format!("no answer within {limit:?}"))
+    }
+}
 
 /// The server API as the driver uses it. Every decision is taken on what
 /// `get_swap` returns and the chain confirms, so an implementation carries

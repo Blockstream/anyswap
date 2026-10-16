@@ -4,16 +4,26 @@ use std::time::Duration;
 /// counted on the driver's own clock, never from a time the server reports.
 #[derive(Clone, Debug)]
 pub struct Config {
-    /// From `started_at`: when a swap with nothing on chain closes.
+    /// From `started_at`: when a swap with nothing on chain closes, or a
+    /// SwapOut's hold invoice expiry if sooner.
     pub funding_timeout: Duration,
     /// The longest a loop waits between passes without a server notification.
     pub poll_interval: Duration,
+    /// How long a call to the server may go unanswered before it fails as a
+    /// transport error.
+    pub server_timeout: Duration,
     /// The target every fee estimate is read at, in blocks.
     pub fee_conf_target: u32,
+    /// How long a chain's fee estimate is reused before it is read again.
+    /// Zero reads it on every pass.
+    pub fee_rate_cache_ttl: Duration,
     /// From a SwapIn's end: how long it stays in `run`'s set once nothing of
     /// ours under its script is left to move, so a deposit that crossed the
     /// end is found without a manual look.
     pub refund_timeout: Duration,
+    /// The longest a SwapOut's hold invoice may hold the user's payment, in
+    /// Lightning blocks: the most its `min_final_cltv_expiry_delta` may be.
+    pub max_htlc_hold: u32,
 }
 
 impl Default for Config {
@@ -21,8 +31,11 @@ impl Default for Config {
         Self {
             funding_timeout: Duration::from_secs(1200),
             poll_interval: Duration::from_secs(15),
+            server_timeout: Duration::from_secs(30),
             fee_conf_target: 3,
+            fee_rate_cache_ttl: Duration::from_secs(30),
             refund_timeout: Duration::from_secs(3600),
+            max_htlc_hold: 1008,
         }
     }
 }
@@ -40,9 +53,8 @@ pub struct ChainConfig {
     pub claim_margin: u32,
     /// The longest CSV accepted on a deposit of our own.
     pub max_refund_csv: u32,
-    /// How far past `dest_csv` a hold invoice may hold the user's payment.
-    pub max_htlc_hold: u32,
-    /// The rate no spend goes above, in sat/vB.
+    /// The rate no spend goes above, in sat/vB. A SwapOut holds its preimage
+    /// while the estimate is above it.
     pub max_fee_rate: f64,
     /// Expected block interval in seconds, to compare a block deadline against
     /// a wall-clock one.
@@ -55,7 +67,6 @@ impl ChainConfig {
             min_confs: 3,
             claim_margin: 252,
             max_refund_csv: 1008,
-            max_htlc_hold: 504,
             max_fee_rate: 100.0,
             block_time: 600,
         }
@@ -66,7 +77,6 @@ impl ChainConfig {
             min_confs: 2,
             claim_margin: 2520,
             max_refund_csv: 10080,
-            max_htlc_hold: 5040,
             max_fee_rate: 1.0,
             block_time: 60,
         }

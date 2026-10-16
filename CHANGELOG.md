@@ -1,5 +1,65 @@
 # Changelog
 
+## [1.4.0]
+
+- **Breaking:** the driver reports the miner fee of the user's own spends as
+  `fee`, read from the transaction on chain: a SwapOut claim's in
+  `Status::Claiming` and `Status::Completed`, a SwapIn refund's in
+  `FundState::Refunding` and `FundState::Refunded`, where a batched refund's
+  fee is the whole transaction's on every fund it took. `Spender` carries it
+  too. A stored swap still loads, with no `fee` until a pass reads it again.
+- **Breaking:** `Config` gains `fee_rate_cache_ttl`, how long a chain's fee
+  estimate is reused, 30 seconds by default, so a sweep reads it once per
+  chain rather than once per swap. Zero reads it on every pass, as before.
+- **Breaking:** `Config` gains `server_timeout`, 30 seconds by default. A call
+  to the server that goes unanswered that long fails as a transport error,
+  where the driver used to wait on it without limit.
+- **Breaking:** `max_htlc_hold` moves from `ChainConfig` to `Config` and caps
+  a SwapOut hold invoice's `min_final_cltv_expiry_delta` on its own, 1008
+  Lightning blocks by default, where it used to be added to the server's
+  `dest_csv`.
+- **Breaking:** `CancelReason` gains `ClaimWindowClosed { at }`. A SwapOut
+  with less than `claim_margin` of the CSV left before its preimage went out
+  ends `Canceled` at once, its payment failing back once the server's CSV
+  refund takes the opening from block `at`. It used to stay `Confirming`
+  until that refund confirmed.
+- A SwapOut's `Funding.expires_at` is no later than the expiry of
+  `claim_invoice`, so it is the time to pay by, and the driver's cancel goes
+  out then.
+- A SwapOut holds its preimage while the fee estimate is above
+  `max_fee_rate`, so its claim pays the current rate. The swap stays
+  `Confirming` meanwhile.
+- `cancel` answers `Requested` for a swap already canceled, where it answered
+  `TooLate`. Against a 1.4.0 server, a cancel retried after a lost answer
+  gets `Requested` too.
+- `run` takes a quiet SwapIn up again once the chain's cached fee rate makes
+  one of its `Dust` funds worth refunding, where it used to leave the fund
+  `Dust` until a manual `step` or `refund`.
+- A SwapOut claim that replaces a pending preimage claim or the server's
+  refund goes through the preimage path even once the server's key is known,
+  so the replacement pays more in all and is accepted.
+- A restored swap's `ended_at` is the server's `transitioned_at` only up to
+  the time of the restore.
+- On wasm32 the driver holds a Web Lock per swap from loading its record to
+  saving it, where `navigator.locks` exists, so tabs and workers over one
+  store take turns on a swap. Natively a store still belongs to one process.
+- `restore_all` stops paging at a page with no swap it has not seen whose
+  request the wallet signed, where it used to follow the server's `has_next`
+  alone, and reports a swap listed twice once.
+- `BitcoinEsplora` and `LiquidEsplora` give up on a request after 30 seconds,
+  where they used to wait on it without limit; `with_timeout` sets another
+  limit. A `ChainClient` of your own should bound its requests the same way,
+  since the driver waits on a chain call for as long as it takes.
+- The driver refunds at most 8 of a SwapIn's funds in one transaction, the
+  most valuable first, and the rest once that refund is in a block, so funds
+  can stay `Refundable` while another refund is `Refunding`. A pass calls
+  `outspend` for as many strays, those in the pending refund first, and for
+  none still `Locked`.
+- `subscribe` yields a swap's handle again when a pass clears its error,
+  where a pass that changed nothing else used to stay silent.
+- `DriverError::retryable` is true for an HTTP 429 from the server or
+  anything in front of it.
+
 ## [1.3.0]
 
 - **Breaking:** the wallet derives its keys from a seed of its own, so the same

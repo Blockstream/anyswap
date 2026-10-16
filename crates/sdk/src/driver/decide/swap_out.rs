@@ -49,7 +49,7 @@ fn funding(record: &SwapRecord, observed: &Observed, config: &Config) -> Decisio
             action: None,
         };
     }
-    let expires_at = funding_deadline(record, config);
+    let expires_at = funding_deadline(record.started_at, record.source.invoice.as_deref(), config);
     let send_cancel = observed.now >= expires_at && !record.sent.cancel;
     Decision {
         status: Status::Funding {
@@ -61,8 +61,10 @@ fn funding(record: &SwapRecord, observed: &Observed, config: &Config) -> Decisio
 }
 
 /// The preimage has not left. It goes out once the opening has `min_confs`
-/// and is unspent, and only while at least `claim_margin` of the CSV remains,
-/// so our claim confirms before the server can refund.
+/// and is unspent, only while the fee estimate is within `max_fee_rate` so our
+/// claim can pay it, and only while at least `claim_margin` of the CSV
+/// remains, so the claim confirms before the server can refund. Past that it
+/// never does, and the swap ends with the opening left to the server's refund.
 fn confirming(
     terms: &Terms,
     observed: &Observed,
@@ -71,9 +73,23 @@ fn confirming(
 ) -> Decision {
     let confs = observed.confs(opening.height);
     let csv_left = terms.csv.saturating_sub(confs);
+    if let Some(height) = opening.height
+        && csv_left < chain_config.claim_margin
+    {
+        return Decision {
+            status: Status::Canceled {
+                opening: Some(opening.utxo.txid.clone()),
+                reason: CancelReason::ClaimWindowClosed {
+                    at: height + terms.csv,
+                },
+            },
+            action: None,
+        };
+    }
     let send_preimage = opening.spend.is_none()
         && confs >= chain_config.min_confs
-        && csv_left >= chain_config.claim_margin;
+        && csv_left >= chain_config.claim_margin
+        && observed.fee_rate <= chain_config.max_fee_rate;
     Decision {
         status: Status::Confirming {
             txid: opening.utxo.txid.clone(),
@@ -100,6 +116,7 @@ fn claiming(
             opening: opening.utxo.txid.clone(),
             claim: our_claim.map(|spend| spend.txid.clone()),
             confs: our_claim.map_or(0, |spend| observed.confs(spend.height)),
+            fee: our_claim.and_then(|spend| spend.fee),
         },
         action: claim(record, observed, chain_config, opening),
     }
@@ -107,7 +124,9 @@ fn claiming(
 
 /// A claim of the opening at the current fee rate: by keypath with the
 /// server's key, by preimage once the opening has `min_confs`. A spend still
-/// in the mempool is outbid, the server's refund at the fee ceiling.
+/// in the mempool is outbid, the server's refund at the fee ceiling. A
+/// pending preimage claim or refund is outbid by preimage, since the smaller
+/// keypath claim pays less in all at the same rate and is refused.
 fn claim(
     record: &SwapRecord,
     observed: &Observed,
@@ -119,10 +138,12 @@ fn claim(
         // A spend in a block can no longer be replaced.
         return None;
     }
-    let path = match record.dest.server_privkey {
-        Some(server_privkey) => Path::Keypath { server_privkey },
-        None if observed.confs(opening.height) >= chain_config.min_confs => Path::Preimage,
-        None => return None,
+    let preimage = observed.confs(opening.height) >= chain_config.min_confs;
+    let path = match (record.dest.server_privkey, pending.map(|spend| spend.path)) {
+        (Some(server_privkey), None | Some(SpendPath::Keypath)) => Path::Keypath { server_privkey },
+        _ if preimage => Path::Preimage,
+        (Some(server_privkey), _) => Path::Keypath { server_privkey },
+        (None, _) => return None,
     };
     let fee_rate = match pending.map(|spend| spend.path) {
         Some(SpendPath::Csv) => chain_config.max_fee_rate,
@@ -147,6 +168,7 @@ fn spent(opening: &Output, spend: &Spender) -> Decision {
         SpendPath::Keypath | SpendPath::Preimage(_) => Status::Completed {
             opening,
             payout: Some(spend.txid.clone()),
+            fee: spend.fee,
         },
         SpendPath::Csv => Status::Canceled {
             opening: Some(opening),

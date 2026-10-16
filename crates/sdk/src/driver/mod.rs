@@ -55,6 +55,7 @@ pub use self::{
 use crate::{
     context::SwapContext,
     swap_script::Side,
+    utxo,
     wallet::{SwapWallet, SwapWalletExt},
 };
 
@@ -66,6 +67,23 @@ pub(crate) fn wallet_error(e: impl std::fmt::Display) -> DriverError {
 pub(crate) struct Registered {
     client: Arc<dyn ChainClient>,
     config: ChainConfig,
+    /// The last fee estimate and when it was read, shared by every clone.
+    rate: Arc<Mutex<Option<(f64, Timestamp)>>>,
+}
+
+impl Registered {
+    /// The chain's estimate at `target`, read again once `ttl` has passed. A
+    /// failed read is not kept.
+    async fn fee_rate(&self, target: u32, ttl: Duration) -> Result<f64, ChainError> {
+        let now = now();
+        let cached = *self.rate.lock().unwrap();
+        if let Some((rate, _)) = cached.filter(|(_, at)| now < at + ttl.as_secs()) {
+            return Ok(rate);
+        }
+        let rate = self.client.fee_rate(target).await?;
+        *self.rate.lock().unwrap() = Some((rate, now));
+        Ok(rate)
+    }
 }
 
 pub(crate) struct Core<W: SwapWallet> {
@@ -81,6 +99,13 @@ pub(crate) struct Core<W: SwapWallet> {
     listener: OnceLock<()>,
     /// Where `run` is; `stop` and the loop move it.
     state: watch::Sender<RunState>,
+}
+
+/// A swap's lock, held from load to save. The store-wide lock is let go
+/// before the one in this process.
+struct SwapLock {
+    _shared: rt::Exclusive,
+    _local: tokio::sync::OwnedMutexGuard<()>,
 }
 
 /// Where `run` is: never started, looping, told to stop and finishing its
@@ -166,6 +191,7 @@ impl<W: SwapWallet + MaybeSend + MaybeSync + 'static> Driver<W> {
             Registered {
                 client: Arc::new(client),
                 config,
+                rate: Arc::default(),
             },
         );
         self
@@ -208,7 +234,7 @@ impl<W: SwapWallet + MaybeSend + MaybeSync + 'static> Driver<W> {
         for chain in [source, dest].into_iter().flatten() {
             self.chain(chain)?;
         }
-        let info = self.core.client.get_info().await?;
+        let info = rt::bounded(self.config.server_timeout, self.core.client.get_info()).await?;
         let policy_asset = self.core.ctx.liquid().map(|liquid| liquid.policy_asset);
         accept::quote(
             info,
@@ -284,7 +310,8 @@ impl<W: SwapWallet + MaybeSend + MaybeSync + 'static> Driver<W> {
             webhook: None,
         };
         let started_at = now();
-        self.core.client.create_swap(&req).await?;
+        let limit = self.config.server_timeout;
+        rt::bounded(limit, self.core.client.create_swap(&req)).await?;
         let record = self.adopt(&req, started_at).await?;
         Handle::new(self.clone(), &record)
     }
@@ -348,7 +375,8 @@ impl<W: SwapWallet + MaybeSend + MaybeSync + 'static> Driver<W> {
             webhook: None,
         };
         let started_at = now();
-        self.core.client.create_swap(&req).await?;
+        let limit = self.config.server_timeout;
+        rt::bounded(limit, self.core.client.create_swap(&req)).await?;
         let record = self.adopt(&req, started_at).await?;
         Handle::new(self.clone(), &record)
     }
@@ -447,7 +475,9 @@ impl<W: SwapWallet + MaybeSend + MaybeSync + 'static> Driver<W> {
             let Ok(Some(mut record)) = self.core.store.load(&id).await else {
                 continue;
             };
-            if record.is_quiet(now, window, self.destinations.is_some()) {
+            if record.is_quiet(now, window, self.destinations.is_some())
+                && !self.dust_pays(&record).await
+            {
                 continue;
             }
             if let Err(error) = self.tick(&mut record).await {
@@ -457,12 +487,41 @@ impl<W: SwapWallet + MaybeSend + MaybeSync + 'static> Driver<W> {
         }
     }
 
+    /// SwapIn: whether a `Dust` fund is worth its refund at the chain's
+    /// cached rate, so a tick of the quiet swap would refund it.
+    async fn dust_pays(&self, record: &SwapRecord) -> bool {
+        let destination = self.destinations.is_some() || record.source.destination.is_some();
+        let largest = record
+            .funds
+            .iter()
+            .filter(|fund| fund.state == FundState::Dust)
+            .map(|fund| fund.amount)
+            .max();
+        let Some((largest, chain)) = largest.zip(record.source.chain).filter(|_| destination)
+        else {
+            return false;
+        };
+        let Some(registered) = self.chains.get(&chain) else {
+            return false;
+        };
+        let config = &self.config;
+        match registered
+            .fee_rate(config.fee_conf_target, config.fee_rate_cache_ttl)
+            .await
+        {
+            Ok(rate) => utxo::refund_fee(chain, rate.min(registered.config.max_fee_rate))
+                .is_some_and(|fee| largest > fee),
+            Err(_) => false,
+        }
+    }
+
     async fn adopt(
         &self,
         req: &CreateSwapRequest,
         started_at: Timestamp,
     ) -> Result<SwapRecord, DriverError> {
-        let state = self.core.client.get_swap(req.swap_id).await?;
+        let limit = self.config.server_timeout;
+        let state = rt::bounded(limit, self.core.client.get_swap(req.swap_id)).await?;
         match self.accept(req, started_at, state) {
             Ok(record) => {
                 self.core.store.save(&record).await?;
@@ -473,7 +532,7 @@ impl<W: SwapWallet + MaybeSend + MaybeSync + 'static> Driver<W> {
                 let cancel = CancelRequest {
                     cancel_message: error.to_string(),
                 };
-                let _ = self.core.client.cancel(req.swap_id, &cancel).await;
+                let _ = rt::bounded(limit, self.core.client.cancel(req.swap_id, &cancel)).await;
                 Err(error)
             }
         }
@@ -498,7 +557,8 @@ impl<W: SwapWallet + MaybeSend + MaybeSync + 'static> Driver<W> {
             .ok_or(DriverError::ChainNotConfigured(chain))
     }
 
-    async fn lock(&self, swap_id: Uuid) -> tokio::sync::OwnedMutexGuard<()> {
+    /// The swap's lock in this process, then across the store's other users.
+    async fn lock(&self, swap_id: Uuid) -> SwapLock {
         let lock = self
             .core
             .locks
@@ -507,7 +567,11 @@ impl<W: SwapWallet + MaybeSend + MaybeSync + 'static> Driver<W> {
             .entry(swap_id)
             .or_default()
             .clone();
-        lock.lock_owned().await
+        let local = lock.lock_owned().await;
+        SwapLock {
+            _shared: rt::exclusive(&format!("anyswap-swap-{swap_id}")).await,
+            _local: local,
+        }
     }
 
     /// The stored record, or `Unknown`.
@@ -593,8 +657,9 @@ async fn listen<W: SwapWallet + MaybeSend + MaybeSync + 'static>(
     }
 }
 
-/// The answer to `cancel`: the swap closes when the server confirms it, and
-/// `TooLate` means the payment landed first and the swap continues.
+/// The answer to `cancel`: `Requested` means the swap is canceled or closes
+/// when the server confirms it, and `TooLate` means the payment landed first
+/// and the swap continues.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Cancellation {
     Requested,
@@ -702,6 +767,9 @@ impl<W: SwapWallet + MaybeSend + MaybeSync + 'static> Handle<W> {
         let id = self.swap_id;
         let _guard = self.driver.lock(id).await;
         let mut record = self.driver.load(id).await?;
+        if matches!(record.status, Status::Canceled { .. }) {
+            return Ok(Cancellation::Requested);
+        }
         let open = matches!(
             record.status,
             Status::Restoring | Status::Funding { .. } | Status::Confirming { .. }
@@ -712,7 +780,8 @@ impl<W: SwapWallet + MaybeSend + MaybeSync + 'static> Handle<W> {
         let req = CancelRequest {
             cancel_message: "canceled by the user".into(),
         };
-        match self.driver.core.client.cancel(id, &req).await {
+        let limit = self.driver.config.server_timeout;
+        match rt::bounded(limit, self.driver.core.client.cancel(id, &req)).await {
             Ok(()) => {
                 record.sent.cancel = true;
                 self.driver.core.store.save(&record).await?;
@@ -729,9 +798,9 @@ impl<W: SwapWallet + MaybeSend + MaybeSync + 'static> Handle<W> {
         Ok(self.record().await?.funds)
     }
 
-    /// SwapIn: one pass that refunds every `Refundable` fund to
+    /// SwapIn: one pass that refunds the `Refundable` funds to
     /// `destination`, returning the refund's txid. `None` when nothing is
-    /// refundable yet.
+    /// refundable yet or an earlier refund is still `Refunding`.
     pub async fn refund(&self, destination: &str) -> Result<Option<String>, DriverError> {
         self.expect(SwapType::SwapIn)?;
         let id = self.swap_id;

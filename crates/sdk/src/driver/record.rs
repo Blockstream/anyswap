@@ -144,7 +144,9 @@ impl SwapRecord {
             FundState::Locked { .. } | FundState::Refundable => destination,
             FundState::Dust | FundState::Refunded { .. } => false,
         });
-        let watched = self.ended_at.is_none_or(|ended| now < ended + window);
+        let watched = self
+            .ended_at
+            .is_none_or(|ended| now < ended.saturating_add(window));
         let swap_in = matches!(self.swap_type(), Ok(SwapType::SwapIn));
         self.status.is_terminal() && !busy && !(swap_in && watched)
     }
@@ -154,6 +156,12 @@ impl SwapRecord {
     /// a keypath spend from then on is read as the server's.
     pub(crate) fn refund_keypath(&self) -> Option<SecretKey> {
         self.source.server_privkey.filter(|_| !self.sent.refund_key)
+    }
+
+    /// SwapIn: whether an output with `confs` confirmations is out of our
+    /// reach, its CSV still running and no keypath to refund it by.
+    pub(crate) fn locked(&self, csv: u32, confs: u32) -> bool {
+        self.refund_keypath().is_none() && confs < csv
     }
 
     pub fn server_status(&self) -> Option<ServerStatus> {
@@ -225,6 +233,7 @@ pub struct Sent {
 
 /// Where a swap stands, resolved from the chain on every pass. Deadlines are
 /// absolute so two quiet passes produce an equal status.
+#[serde_as]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "status")]
 pub enum Status {
@@ -240,19 +249,28 @@ pub enum Status {
         needed: u32,
     },
     /// SwapOut only. The preimage may have left: claiming the opening, with
-    /// `claim` once a claim of ours is broadcast.
+    /// `claim` and its `fee` once a claim of ours is broadcast.
     Claiming {
         opening: String,
         claim: Option<String>,
         confs: u32,
+        #[serde(default)]
+        #[serde_as(as = "Option<DisplayFromStr>")]
+        fee: Option<u64>,
     },
+    /// `fee` is our claim's on a SwapOut, and `None` on a SwapIn, whose
+    /// payout is the server's.
     Completed {
         opening: String,
         payout: Option<String>,
+        #[serde(default)]
+        #[serde_as(as = "Option<DisplayFromStr>")]
+        fee: Option<u64>,
     },
     /// The swap did not happen, for `reason`. On a SwapOut the invoice fails
-    /// back: the server canceled before any opening, or its CSV refund took
-    /// `opening`. On a SwapIn the deposit stays ours, with the rest of `funds`.
+    /// back: the server canceled before any opening, or `opening` is left to
+    /// its CSV refund. On a SwapIn the deposit stays ours, with the rest of
+    /// `funds`.
     Canceled {
         opening: Option<String>,
         reason: CancelReason,
@@ -277,6 +295,10 @@ pub enum CancelReason {
     CsvMatured,
     /// SwapOut: the server's CSV refund took the opening.
     ServerRefunded,
+    /// SwapOut: less than `claim_margin` of the CSV was left before the
+    /// preimage went out, so it never will. The invoice fails back once the
+    /// server's CSV refund takes the opening, from block `at`.
+    ClaimWindowClosed { at: Height },
 }
 
 /// The server's cancel in its words: its `ErrorType` name and the message
@@ -299,6 +321,7 @@ pub struct Fund {
     pub state: FundState,
 }
 
+#[serde_as]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "state")]
 pub enum FundState {
@@ -306,12 +329,24 @@ pub enum FundState {
     Locked { at: Option<Height> },
     /// Spendable now and worth its fee: the next refund takes it.
     Refundable,
-    /// Spendable, but worth less than its fee at the last rate.
+    /// Spendable, but worth less than its fee at the last rate. `run` takes
+    /// the swap up again once the rate makes it worth its fee.
     Dust,
-    /// In our refund `txid`, not yet in a block.
-    Refunding { txid: String },
-    /// In our refund `txid`, in a block.
-    Refunded { txid: String },
+    /// In our refund `txid`, not yet in a block. `fee` is the whole
+    /// transaction's, shared by every fund it took.
+    Refunding {
+        txid: String,
+        #[serde(default)]
+        #[serde_as(as = "Option<DisplayFromStr>")]
+        fee: Option<u64>,
+    },
+    /// In our refund `txid`, in a block, with `fee` as in `Refunding`.
+    Refunded {
+        txid: String,
+        #[serde(default)]
+        #[serde_as(as = "Option<DisplayFromStr>")]
+        fee: Option<u64>,
+    },
 }
 
 #[derive(Clone, Debug, Error)]

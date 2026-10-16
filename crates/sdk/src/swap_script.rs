@@ -113,6 +113,23 @@ impl Tx {
                 .collect(),
         }
     }
+
+    /// The miner fee: Liquid's explicit fee output, or on Bitcoin what the
+    /// inputs, each worth `value`, carry over the outputs. `None` on Bitcoin
+    /// while an input's value is unknown.
+    #[cfg(feature = "driver")]
+    pub fn fee(&self, value: impl Fn(&Outpoint) -> Option<u64>) -> Option<u64> {
+        match self {
+            Self::Bitcoin(tx) => {
+                let input = self
+                    .inputs()
+                    .iter()
+                    .try_fold(0_u64, |total, prev| total.checked_add(value(prev)?))?;
+                transaction::bitcoin::bitcoin_tx_fee(tx, input).ok()
+            }
+            Self::Liquid(tx) => transaction::liquid::tx_fee(tx).ok(),
+        }
+    }
 }
 
 /// How an input spent a swap output: the three ways its script opens.

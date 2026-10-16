@@ -120,7 +120,8 @@ at the server, plus one for every failing pass. A handle keeps no copy of
 the swap: `record` and `status` read the store, `error` the driver's
 latest. A failing swap stays in the set and is retried each
 pass, so a broken backend shows up as a heartbeat of updates with
-`swap.error()` set; a pass that works clears it. `DriverError::retryable`
+`swap.error()` set; a pass that works clears it and yields the handle once
+more. `DriverError::retryable`
 separates a chain or server outage, which the next pass may simply outlive,
 from an error that needs attention. The stream drops updates under
 sustained lag rather than blocking the driver, so treat it as a prompt to

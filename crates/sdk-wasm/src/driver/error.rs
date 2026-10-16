@@ -4,8 +4,8 @@ use anyswap_sdk::{api::ErrorCode, client::ClientError, driver::DriverError as Sd
 use wasm_bindgen::prelude::*;
 
 /// What a driver call failed with: a `code` to act on, a `message` to show.
-/// `retryable` means the chain or server was unreachable and the next call
-/// sees the same world.
+/// `retryable` means the chain or server was unreachable, or the server asked
+/// to slow down, and the next call sees the same world.
 #[wasm_bindgen]
 #[derive(Clone)]
 pub struct DriverError {

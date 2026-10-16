@@ -24,7 +24,8 @@ impl Config {
         Config::default()
     }
 
-    /// Seconds from `started_at` until a swap with nothing on chain closes.
+    /// Seconds from `started_at` until a swap with nothing on chain closes, or
+    /// a swap-out's hold invoice expiry if sooner.
     #[wasm_bindgen(getter, js_name = fundingTimeout)]
     pub fn funding_timeout(&self) -> u64 {
         self.inner.funding_timeout.as_secs()
@@ -46,6 +47,18 @@ impl Config {
         self.inner.poll_interval = Duration::from_secs(secs);
     }
 
+    /// Seconds a call to the server may go unanswered before it fails as a
+    /// transport error.
+    #[wasm_bindgen(getter, js_name = serverTimeout)]
+    pub fn server_timeout(&self) -> u64 {
+        self.inner.server_timeout.as_secs()
+    }
+
+    #[wasm_bindgen(setter, js_name = serverTimeout)]
+    pub fn set_server_timeout(&mut self, secs: u64) {
+        self.inner.server_timeout = Duration::from_secs(secs);
+    }
+
     /// The target every fee estimate is read at, in blocks.
     #[wasm_bindgen(getter, js_name = feeConfTarget)]
     pub fn fee_conf_target(&self) -> u32 {
@@ -55,6 +68,18 @@ impl Config {
     #[wasm_bindgen(setter, js_name = feeConfTarget)]
     pub fn set_fee_conf_target(&mut self, blocks: u32) {
         self.inner.fee_conf_target = blocks;
+    }
+
+    /// Seconds a chain's fee estimate is reused before it is read again; zero
+    /// reads it on every pass.
+    #[wasm_bindgen(getter, js_name = feeRateCacheTtl)]
+    pub fn fee_rate_cache_ttl(&self) -> u64 {
+        self.inner.fee_rate_cache_ttl.as_secs()
+    }
+
+    #[wasm_bindgen(setter, js_name = feeRateCacheTtl)]
+    pub fn set_fee_rate_cache_ttl(&mut self, secs: u64) {
+        self.inner.fee_rate_cache_ttl = Duration::from_secs(secs);
     }
     /// Seconds from a swap-in's end that it stays in `run`'s set once nothing
     /// of ours under its script is left to move.
@@ -66,6 +91,18 @@ impl Config {
     #[wasm_bindgen(setter, js_name = refundTimeout)]
     pub fn set_refund_timeout(&mut self, secs: u64) {
         self.inner.refund_timeout = Duration::from_secs(secs);
+    }
+
+    /// The longest a swap-out's hold invoice may hold the user's payment, in
+    /// Lightning blocks.
+    #[wasm_bindgen(getter, js_name = maxHtlcHold)]
+    pub fn max_htlc_hold(&self) -> u32 {
+        self.inner.max_htlc_hold
+    }
+
+    #[wasm_bindgen(setter, js_name = maxHtlcHold)]
+    pub fn set_max_htlc_hold(&mut self, blocks: u32) {
+        self.inner.max_htlc_hold = blocks;
     }
 }
 
@@ -138,19 +175,8 @@ impl ChainConfig {
         self.inner.max_refund_csv = blocks;
     }
 
-    /// How far past `dest_csv` a hold invoice may hold the user's payment,
-    /// in blocks.
-    #[wasm_bindgen(getter, js_name = maxHtlcHold)]
-    pub fn max_htlc_hold(&self) -> u32 {
-        self.inner.max_htlc_hold
-    }
-
-    #[wasm_bindgen(setter, js_name = maxHtlcHold)]
-    pub fn set_max_htlc_hold(&mut self, blocks: u32) {
-        self.inner.max_htlc_hold = blocks;
-    }
-
-    /// The rate no spend goes above, in sat/vB.
+    /// The rate no spend goes above, in sat/vB. A swap-out holds its preimage
+    /// while the estimate is above it.
     #[wasm_bindgen(getter, js_name = maxFeeRate)]
     pub fn max_fee_rate(&self) -> f64 {
         self.inner.max_fee_rate

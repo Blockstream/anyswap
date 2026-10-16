@@ -1,15 +1,23 @@
 //! One pass's view of the world: what is under the script and one poll of the
 //! server, each verified before anything reads it.
 
+use std::{cmp::Reverse, collections::HashMap};
+
 use anyswap_core::{
-    api::SwapState, secp, transaction::TxError, types::SwapType, utils::sha256_payment_hash,
+    api::SwapState,
+    secp,
+    transaction::TxError,
+    types::{Outpoint, SwapType},
+    utils::sha256_payment_hash,
 };
 use bitcoin::secp256k1::SecretKey;
 
 use super::{
     Registered,
+    config::Config,
     error::DriverError,
     record::{FundState, Height, ServerCancel, SwapRecord, Timestamp},
+    rt::bounded,
     server::ServerClient,
 };
 use crate::{
@@ -19,12 +27,19 @@ use crate::{
     utxo::{self, SwapUtxo},
 };
 
+/// The most SwapIn funds a pass reads the spends of and a refund takes, the
+/// most valuable first. One refund is in the mempool at a time, so a pass can
+/// read every fund in it. Honest use leaves far fewer under one script, so a
+/// pile of strays costs a pass no more than this and comes back a block apart.
+pub(crate) const FUNDS_PER_PASS: usize = 8;
+
 /// One pass's view of the world, verified; nothing in it is left to believe.
 #[derive(Clone, Debug)]
 pub struct Observed {
     pub now: Timestamp,
     pub tip: Height,
-    /// The chain's estimate at `fee_conf_target`, in sat/vB.
+    /// The chain's estimate at `fee_conf_target`, in sat/vB, at most
+    /// `fee_rate_cache_ttl` old.
     pub fee_rate: f64,
     /// Every output ever under the script that is this swap's, oldest first.
     pub outputs: Vec<Output>,
@@ -46,6 +61,9 @@ pub struct Spender {
     pub txid: String,
     pub height: Option<Height>,
     pub path: SpendPath,
+    /// Its miner fee, `None` on Bitcoin when it spends an output the pass
+    /// did not see under the script.
+    pub fee: Option<u64>,
 }
 
 /// One successful poll of the server, each part taken on its own terms, so a
@@ -73,7 +91,7 @@ pub enum Report {
 
 impl Observed {
     pub fn confs(&self, height: Option<Height>) -> u32 {
-        height.map_or(0, |height| self.tip.saturating_sub(height) + 1)
+        confs(self.tip, height)
     }
 
     /// The opening and the strays. The opening is the oldest output paying
@@ -125,10 +143,12 @@ pub(crate) async fn observe(
     script: &SwapScript,
     chain: &Registered,
     client: &dyn ServerClient,
-    fee_conf_target: u32,
+    config: &Config,
 ) -> Result<Observed, DriverError> {
     let tip = chain.client.height().await?;
-    let fee_rate = chain.client.fee_rate(fee_conf_target).await?;
+    let fee_rate = chain
+        .fee_rate(config.fee_conf_target, config.fee_rate_cache_ttl)
+        .await?;
     let history = chain.client.address_history(&script.address()).await?;
     let txs = history
         .into_iter()
@@ -146,35 +166,44 @@ pub(crate) async fn observe(
             })
         })
         .collect();
+    let values: HashMap<Outpoint, u64> = outputs
+        .iter()
+        .map(|output| (output.utxo.outpoint(), output.value))
+        .collect();
     for (entry, tx) in &txs {
         for (vin, prev) in tx.inputs().into_iter().enumerate() {
             if let Some(output) = outputs
                 .iter_mut()
                 .find(|output| output.utxo.outpoint() == prev)
             {
-                output.spend = Some(spender(script, tx, vin as u32, entry.height)?);
+                output.spend = Some(spender(script, tx, vin as u32, entry.height, &values)?);
             }
         }
     }
     // An address history holds only so many mempool transactions, so a spend
     // it misses is asked of the output itself. Only outputs a decision reads
-    // are asked, and only the opening's answer is needed to go on, so dust
-    // paid to the address cannot stall a pass.
+    // are asked, at most `FUNDS_PER_PASS` strays with those in our refund
+    // first, and only the opening's answer is needed to go on, so dust paid
+    // to the address cannot stall a pass.
     let amount = match terms.side {
         Side::Source => record.send_amount,
         Side::Dest => record.receive_amount,
     };
     let opening = opening(&outputs, amount).map(|output| output.utxo.outpoint());
     let refund_fee = utxo::refund_fee(terms.chain, fee_rate.min(chain.config.max_fee_rate));
-    for output in outputs.iter_mut().filter(|output| output.spend.is_none()) {
-        let is_opening = opening == Some(output.utxo.outpoint());
-        if !is_opening && !stray_read(record, terms, refund_fee, output) {
-            continue;
-        }
-        match spend_of(terms, script, chain, output).await {
-            Ok(spend) => output.spend = spend,
-            Err(e) if is_opening => return Err(e),
-            Err(_) => {}
+    let (openings, mut strays): (Vec<_>, Vec<_>) = outputs
+        .iter_mut()
+        .filter(|output| output.spend.is_none())
+        .partition(|output| opening == Some(output.utxo.outpoint()));
+    strays.retain(|output| stray_read(record, terms, tip, refund_fee, output));
+    strays.sort_by_key(|output| (!refunding(record, output), Reverse(output.value)));
+    strays.truncate(FUNDS_PER_PASS);
+    for output in openings {
+        output.spend = spend_of(terms, script, chain, output, &values).await?;
+    }
+    for output in strays {
+        if let Ok(spend) = spend_of(terms, script, chain, output, &values).await {
+            output.spend = spend;
         }
     }
     outputs.sort_by(|a, b| {
@@ -188,8 +217,7 @@ pub(crate) async fn observe(
         key(a).cmp(&key(b))
     });
 
-    let server = client
-        .get_swap(record.swap_id)
+    let server = bounded(config.server_timeout, client.get_swap(record.swap_id))
         .await
         .ok()
         .map(|state| poll(terms, state));
@@ -215,18 +243,30 @@ fn opening(outputs: &[Output], amount: u64) -> Option<&Output> {
         })
 }
 
-/// SwapIn: a stray worth its refund fee, or one in a refund of ours. A
-/// SwapOut reads no stray.
+/// Confirmations at `tip` of a transaction at `height`, none in the mempool.
+fn confs(tip: Height, height: Option<Height>) -> u32 {
+    height.map_or(0, |height| tip.saturating_sub(height) + 1)
+}
+
+/// SwapIn: a stray in a refund of ours, or one worth its refund fee and not
+/// locked, since nothing acts on a locked one. A SwapOut reads no stray.
 fn stray_read(
     record: &SwapRecord,
     terms: &Terms,
+    tip: Height,
     refund_fee: Option<u64>,
     output: &Output,
 ) -> bool {
-    let refunding = record.funds.iter().any(|fund| {
+    let refundable = refund_fee.is_some_and(|fee| output.value > fee)
+        && !record.locked(terms.csv, confs(tip, output.height));
+    terms.side == Side::Source && (refundable || refunding(record, output))
+}
+
+/// Whether the last pass saw `output` in a refund of ours in the mempool.
+fn refunding(record: &SwapRecord, output: &Output) -> bool {
+    record.funds.iter().any(|fund| {
         fund.outpoint == output.utxo.outpoint() && matches!(fund.state, FundState::Refunding { .. })
-    });
-    terms.side == Side::Source && (refund_fee.is_some_and(|fee| output.value > fee) || refunding)
+    })
 }
 
 /// The spend of `output` as the output itself reports it.
@@ -235,6 +275,7 @@ async fn spend_of(
     script: &SwapScript,
     chain: &Registered,
     output: &Output,
+    values: &HashMap<Outpoint, u64>,
 ) -> Result<Option<Spender>, DriverError> {
     let outpoint = output.utxo.outpoint();
     let Some(entry) = chain.client.outspend(&outpoint.txid, outpoint.vout).await? else {
@@ -244,16 +285,23 @@ async fn spend_of(
     let Some(vin) = tx.inputs().iter().position(|prev| *prev == outpoint) else {
         return Ok(None);
     };
-    Ok(Some(spender(script, &tx, vin as u32, entry.height)?))
+    Ok(Some(spender(
+        script,
+        &tx,
+        vin as u32,
+        entry.height,
+        values,
+    )?))
 }
 
 /// The spend of a swap output by input `vin` of `tx`, its path read from the
-/// witness.
+/// witness and its fee from `values`, the swap outputs' own.
 fn spender(
     script: &SwapScript,
     tx: &Tx,
     vin: u32,
     height: Option<Height>,
+    values: &HashMap<Outpoint, u64>,
 ) -> Result<Spender, TxError> {
     let path = script.spend_path(tx, vin).ok_or_else(|| {
         TxError::Decode(format!("input {vin} of {} opens no swap path", tx.txid()))
@@ -262,6 +310,7 @@ fn spender(
         txid: tx.txid(),
         height,
         path,
+        fee: tx.fee(|prev| values.get(prev).copied()),
     })
 }
 

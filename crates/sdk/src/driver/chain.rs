@@ -20,7 +20,9 @@ pub struct HistoryTx {
 
 /// Query and broadcast on one chain. The driver reads a script's whole history
 /// and interprets it itself, so an implementation fetches bytes by a fixed
-/// recipe and never decides anything.
+/// recipe and never decides anything. It also bounds each of its own requests:
+/// the driver waits on a call for as long as it takes, since a history read
+/// may need many requests.
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 pub trait ChainClient: MaybeSend + MaybeSync {

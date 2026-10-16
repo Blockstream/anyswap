@@ -5,15 +5,15 @@
 //! to all esplora API methods; [`BitcoinChainClient`] wraps it to satisfy the
 //! chain-neutral [`ChainClient`] trait.
 
-use std::str::FromStr;
+use std::{str::FromStr, time::Duration};
 
 use async_trait::async_trait;
 use bitcoin::{Address, Transaction, Txid};
 use esplora_client::r#async::AsyncClient;
 
 use super::{
-    AddressUtxo, ChainClient, ChainClientError, EsploraError, EsploraUtxo, OutpointSpend, Outspend,
-    SpendingTx,
+    AddressUtxo, ChainClient, ChainClientError, DEFAULT_TIMEOUT, EsploraError, EsploraUtxo,
+    OutpointSpend, Outspend, SpendingTx,
 };
 use crate::transaction::{decode_tx_hex, encode_tx_hex};
 
@@ -37,7 +37,15 @@ impl std::ops::Deref for BitcoinEsplora {
 
 impl BitcoinEsplora {
     pub fn new(url: &str) -> Result<Self, EsploraError> {
-        let client = esplora_client::Builder::new(url).build_async()?;
+        Self::with_timeout(url, DEFAULT_TIMEOUT)
+    }
+
+    /// A client whose every request fails once it goes unanswered for
+    /// `timeout`, counted in whole seconds.
+    pub fn with_timeout(url: &str, timeout: Duration) -> Result<Self, EsploraError> {
+        let client = esplora_client::Builder::new(url)
+            .timeout(timeout.as_secs())
+            .build_async()?;
         Ok(Self(client))
     }
 

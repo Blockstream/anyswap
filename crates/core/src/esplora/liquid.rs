@@ -4,13 +4,17 @@ use std::{
     collections::HashMap,
     str::FromStr,
     sync::{Arc, Mutex, PoisonError},
+    time::Duration,
 };
 
 use async_trait::async_trait;
 use elements::{Address, AssetId, BlockHash, Transaction, TxOut, Txid, encode};
 use serde::Deserialize;
 
-use super::{AddressUtxo, ChainClient, ChainClientError, EsploraError, OutpointSpend, SpendingTx};
+use super::{
+    AddressUtxo, ChainClient, ChainClientError, DEFAULT_TIMEOUT, EsploraError, OutpointSpend,
+    SpendingTx,
+};
 
 /// Elements' `minrelaytxfee` default, and the fallback when there is no estimate.
 const MIN_FEE_RATE_SAT_PER_VB: f64 = 0.1;
@@ -55,8 +59,19 @@ pub struct LiquidEsplora {
 
 impl LiquidEsplora {
     pub fn new(url: &str) -> Self {
+        Self::with_timeout(url, DEFAULT_TIMEOUT)
+    }
+
+    /// A client whose every request fails once it goes unanswered for
+    /// `timeout`. Panics where `reqwest::Client::new` would: when the TLS
+    /// backend cannot start.
+    pub fn with_timeout(url: &str, timeout: Duration) -> Self {
+        let client = reqwest::Client::builder()
+            .timeout(timeout)
+            .build()
+            .expect("TLS backend starts");
         Self {
-            client: reqwest::Client::new(),
+            client,
             base_url: url.trim_end_matches('/').to_owned(),
             txs: Arc::default(),
         }
@@ -233,8 +248,9 @@ impl LiquidEsplora {
     }
 
     /// Every transaction touching `address` with its confirmation height,
-    /// newest first, paged to the end. Bodies are fetched once and kept; an
-    /// entry whose body the explorer no longer serves is skipped.
+    /// newest first, paged to the end. Bodies are fetched once and kept as
+    /// each arrives, so a read that fails partway leaves the next one less to
+    /// fetch; an entry whose body the explorer no longer serves is skipped.
     pub async fn address_txs(
         &self,
         address: &Address,
@@ -248,14 +264,13 @@ impl LiquidEsplora {
                 .filter(|txid| !txs.contains_key(txid))
                 .collect()
         };
-        let mut fetched = Vec::with_capacity(missing.len());
         for txid in missing {
             if let Some(tx) = self.get_tx(&txid).await? {
-                fetched.push((txid, tx));
+                let mut txs = self.txs.lock().unwrap_or_else(PoisonError::into_inner);
+                txs.insert(txid, tx);
             }
         }
-        let mut txs = self.txs.lock().unwrap_or_else(PoisonError::into_inner);
-        txs.extend(fetched);
+        let txs = self.txs.lock().unwrap_or_else(PoisonError::into_inner);
         Ok(history
             .into_iter()
             .filter_map(|(txid, height)| txs.get(&txid).cloned().map(|tx| (tx, height)))

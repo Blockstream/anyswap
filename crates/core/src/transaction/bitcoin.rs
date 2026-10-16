@@ -342,7 +342,7 @@ pub fn opening_value(
 /// Miner fee of a signed tx: `input_value - Σ outputs`. Bitcoin only (Liquid
 /// carries an explicit fee output). `input_value` is the summed value of every
 /// input the tx spends.
-pub(crate) fn bitcoin_tx_fee(tx: &Transaction, input_value: u64) -> Result<u64, TxError> {
+pub fn bitcoin_tx_fee(tx: &Transaction, input_value: u64) -> Result<u64, TxError> {
     let output_value = tx
         .output
         .iter()

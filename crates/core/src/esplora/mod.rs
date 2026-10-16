@@ -6,6 +6,8 @@
 //! strings/bytes so the swap engine never handles chain-specific transaction or
 //! address types.
 
+use std::time::Duration;
+
 use ::bitcoin::{Amount, Txid};
 use async_trait::async_trait;
 use thiserror::Error;
@@ -17,6 +19,10 @@ pub use self::{
     bitcoin::{BitcoinChainClient, BitcoinEsplora},
     liquid::{LiquidChainClient, LiquidEsplora},
 };
+
+/// How long one request may go unanswered before it fails, for a client built
+/// with `new`.
+pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Error)]
 pub enum EsploraError {

@@ -69,12 +69,13 @@ pub enum DriverError {
 }
 
 impl DriverError {
-    /// Chain or server unreachable: the next pass sees the same world. Anything
-    /// else means nothing may act before it is understood.
+    /// Chain or server unreachable, or the server asking to slow down: the
+    /// next pass sees the same world. Anything else means nothing may act
+    /// before it is understood.
     pub fn retryable(&self) -> bool {
         match self {
             Self::Chain(_) | Self::Server(ClientError::Transport(_)) => true,
-            Self::Server(ClientError::Api { status, .. }) => *status >= 500,
+            Self::Server(ClientError::Api { status, .. }) => *status == 429 || *status >= 500,
             _ => false,
         }
     }
