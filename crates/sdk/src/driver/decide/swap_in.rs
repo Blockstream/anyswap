@@ -58,6 +58,7 @@ fn confirming(observed: &Observed, chain_config: &ChainConfig, opening: &Output)
             txid: opening.utxo.txid.clone(),
             confs: observed.confs(opening.height),
             needed: chain_config.min_confs,
+            fee_rate_spike: None,
         },
         action: None,
     }

@@ -79,7 +79,7 @@ let driver = Driver::new(SwapContext::new(wallet), client.clone(), MemoryStore::
         Chain::Bitcoin,
         BitcoinEsplora::new("http://localhost:8080/regtest/api")?,
         ChainConfig::bitcoin(),
-    )
+    )?
     .with_signals(client.signals());
 ```
 

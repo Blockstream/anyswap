@@ -103,9 +103,21 @@ impl LiquidEsplora {
     }
 
     pub async fn get_tx_confirmations(&self, txid: &Txid) -> Result<Option<u32>, EsploraError> {
-        let Some(status) = self.get_tx_status_optional(txid).await? else {
+        // `/tx/:txid/status` reports an unknown txid as unconfirmed; `/tx/:txid` 404s.
+        let response = self
+            .client
+            .get(format!("{}/tx/{txid}", self.base_url))
+            .send()
+            .await?;
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
             return Ok(None);
-        };
+        }
+        let tx = response
+            .error_for_status()?
+            .json::<serde_json::Value>()
+            .await?;
+        let status = serde_json::from_value::<ApiTxStatus>(tx["status"].clone())
+            .map_err(|e| EsploraError::InvalidResponse(format!("transaction status: {e}")))?;
         let Some(block_height) = status.confirmation_height() else {
             return Ok(Some(0));
         };

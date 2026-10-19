@@ -31,7 +31,7 @@ A context built without `with_liquid` serves Bitcoin swaps only.
 ## The chain registration
 
 ```rust
-let driver = driver.with_chain(Chain::Liquid, liquid_esplora, ChainConfig::liquid());
+let driver = driver.with_chain(Chain::Liquid, liquid_esplora, ChainConfig::liquid())?;
 ```
 
 `ChainConfig::liquid()` carries the Liquid defaults: one-minute blocks, two

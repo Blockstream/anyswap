@@ -146,6 +146,7 @@ impl From<&SdkDriverError> for DriverErrorCode {
             SdkDriverError::Unsigned(_) => Self::Unsigned,
             SdkDriverError::BadSignature(_) => Self::BadSignature,
             SdkDriverError::ChainNotConfigured(_) => Self::ChainNotConfigured,
+            SdkDriverError::InvalidChainConfig(..) => Self::Invalid,
             SdkDriverError::Unknown(_) => Self::UnknownSwap,
             SdkDriverError::Unsupported(_) => Self::Unsupported,
             SdkDriverError::QuoteExpired => Self::QuoteExpired,

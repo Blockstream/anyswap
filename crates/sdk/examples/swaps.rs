@@ -113,8 +113,8 @@ async fn main() -> anyhow::Result<()> {
             Chain::Bitcoin,
             BitcoinEsplora::new(BITCOIN_ESPLORA_URL)?,
             ChainConfig::bitcoin(),
-        )
-        .with_chain(Chain::Liquid, liquid_esplora, ChainConfig::liquid())
+        )?
+        .with_chain(Chain::Liquid, liquid_esplora, ChainConfig::liquid())?
         .with_destinations(Addresses(addresses))
         .with_signals(client.signals());
 

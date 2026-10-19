@@ -1,5 +1,26 @@
 # Changelog
 
+## [1.5.0]
+
+- **Breaking:** `Status::Confirming` gains `fee_rate_spike`, the fee estimate
+  while it is above `max_fee_rate` and holds a SwapOut's preimage.
+- **Breaking:** `with_chain` returns a `Result`, refusing a `max_fee_rate`
+  that is not finite and positive with `DriverError::InvalidChainConfig`.
+
+### Minor
+
+- A SwapOut claims its opening by the preimage path only once the preimage
+  was sent or seen on chain. With only the server's key it claims by the
+  keypath, even to outbid a pending CSV refund, where it used to switch to
+  the preimage path.
+- A pass whose save fails still refunds what the chain allows and fails
+  only at its end, where it used to stop at the save.
+- A record keeps at most 64 bytes of the server's status and 256 of its
+  cancel message.
+- A SwapIn refund spends only confirmed outputs, so a fund is `Locked` until
+  its first confirmation even once the server's key is home, where the
+  keypath used to refund it from the mempool.
+
 ## [1.4.0]
 
 - **Breaking:** the driver reports the miner fee of the user's own spends as

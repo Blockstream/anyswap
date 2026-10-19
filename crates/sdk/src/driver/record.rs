@@ -159,9 +159,10 @@ impl SwapRecord {
     }
 
     /// SwapIn: whether an output with `confs` confirmations is out of our
-    /// reach, its CSV still running and no keypath to refund it by.
+    /// reach: unconfirmed, so a refund never spends a mempool chain, or its
+    /// CSV still running and no keypath to refund it by.
     pub(crate) fn locked(&self, csv: u32, confs: u32) -> bool {
-        self.refund_keypath().is_none() && confs < csv
+        confs == 0 || (self.refund_keypath().is_none() && confs < csv)
     }
 
     pub fn server_status(&self) -> Option<ServerStatus> {
@@ -234,7 +235,7 @@ pub struct Sent {
 /// Where a swap stands, resolved from the chain on every pass. Deadlines are
 /// absolute so two quiet passes produce an equal status.
 #[serde_as]
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "status")]
 pub enum Status {
     /// Restored, before its first pass: where it stands is not known yet.
@@ -243,10 +244,14 @@ pub enum Status {
         expires_at: Timestamp,
         cancel_sent: bool,
     },
+    /// SwapOut: `fee_rate_spike` is the fee estimate, in sat/vB, while it is
+    /// above `max_fee_rate` and holds the preimage.
     Confirming {
         txid: String,
         confs: u32,
         needed: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        fee_rate_spike: Option<f64>,
     },
     /// SwapOut only. The preimage may have left: claiming the opening, with
     /// `claim` and its `fee` once a claim of ours is broadcast.
@@ -282,6 +287,9 @@ impl Status {
         matches!(self, Self::Completed { .. } | Self::Canceled { .. })
     }
 }
+
+// `fee_rate_spike` is above a finite `max_fee_rate`, so it is never NaN.
+impl Eq for Status {}
 
 /// Why a swap ended `Canceled`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -325,7 +333,7 @@ pub struct Fund {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "state")]
 pub enum FundState {
-    /// Under the CSV until `at`, or unconfirmed so its CSV has not started.
+    /// Under the CSV until `at`, or unconfirmed.
     Locked { at: Option<Height> },
     /// Spendable now and worth its fee: the next refund takes it.
     Refundable,

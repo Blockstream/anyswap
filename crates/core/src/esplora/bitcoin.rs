@@ -62,11 +62,11 @@ impl BitcoinEsplora {
     }
 
     pub async fn get_tx_confirmations(&self, txid: &Txid) -> Result<Option<u32>, EsploraError> {
-        let status = match self.0.get_tx_status(txid).await {
-            Ok(status) => status,
-            Err(esplora_client::Error::HttpResponse { status: 404, .. }) => return Ok(None),
-            Err(e) => return Err(e.into()),
+        // `/tx/:txid/status` reports an unknown txid as unconfirmed; `/tx/:txid` 404s.
+        let Some(tx) = self.0.get_tx_info(txid).await? else {
+            return Ok(None);
         };
+        let status = tx.status;
         let block_height = match status.block_height {
             Some(h) if status.confirmed => h,
             _ => return Ok(Some(0)),

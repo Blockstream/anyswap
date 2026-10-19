@@ -17,6 +17,7 @@ hex = { workspace = true }
 lightning-invoice = { workspace = true }
 secp256k1 = { version = "0.33.1", features = ["std", "rand"] }
 serde = { workspace = true }
+serde_json = { workspace = true, optional = true }
 serde_with = { workspace = true }
 strum = { workspace = true }
 thiserror = { workspace = true }
@@ -30,7 +31,7 @@ reqwest = { workspace = true, optional = true }
 js-sys = "0.3"
 
 [features]
-esplora = ["dep:esplora-client", "dep:reqwest", "dep:async-trait"]
+esplora = ["dep:esplora-client", "dep:reqwest", "dep:async-trait", "dep:serde_json"]
 openapi = ["dep:utoipa"]
 
 [dev-dependencies]

@@ -88,7 +88,7 @@ impl Driver {
             Chain::Liquid => ChainConfig::liquid(),
         });
         Ok(Driver {
-            inner: self.inner.with_chain(chain, client, *config.inner()),
+            inner: self.inner.with_chain(chain, client, *config.inner())?,
         })
     }
 

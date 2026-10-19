@@ -185,7 +185,13 @@ impl<W: SwapWallet + MaybeSend + MaybeSync + 'static> Driver<W> {
         chain: Chain,
         client: impl ChainClient + 'static,
         config: ChainConfig,
-    ) -> Self {
+    ) -> Result<Self, DriverError> {
+        if !(config.max_fee_rate.is_finite() && config.max_fee_rate > 0.0) {
+            return Err(DriverError::InvalidChainConfig(
+                chain,
+                "max_fee_rate must be finite and positive",
+            ));
+        }
         self.chains.insert(
             chain,
             Registered {
@@ -194,7 +200,7 @@ impl<W: SwapWallet + MaybeSend + MaybeSync + 'static> Driver<W> {
                 rate: Arc::default(),
             },
         );
-        self
+        Ok(self)
     }
 
     pub fn with_config(mut self, config: Config) -> Self {

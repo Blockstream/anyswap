@@ -37,9 +37,9 @@ impl<W: SwapWallet + MaybeSend + MaybeSync + 'static> Driver<W> {
 
     /// One pass: observe, keep what the server proved, decide, apply, refund
     /// what of ours is refundable, then save and announce what changed, an
-    /// earlier error it clears included. A
-    /// failed action fails the pass only at its end, so a message the server
-    /// cannot take never holds back a refund the chain alone allows.
+    /// earlier error it clears included. A failed action or save fails the
+    /// pass only at its end, so neither a message the server cannot take nor
+    /// a store that cannot write holds back a refund the chain alone allows.
     async fn pass(
         &self,
         record: &mut SwapRecord,
@@ -77,10 +77,15 @@ impl<W: SwapWallet + MaybeSend + MaybeSync + 'static> Driver<W> {
         if record.status.is_terminal() {
             record.ended_at.get_or_insert(observed.now);
         }
-        if *record != before {
-            self.core.store.save(record).await?;
-            self.emit(record);
-        }
+        let saved = if *record != before {
+            self.core
+                .store
+                .save(record)
+                .await
+                .map(|()| self.emit(record))
+        } else {
+            Ok(())
+        };
 
         // Announced apart, so a refund that fails cannot hide what the pass
         // already saved.
@@ -91,6 +96,7 @@ impl<W: SwapWallet + MaybeSend + MaybeSync + 'static> Driver<W> {
             self.core.store.save(record).await?;
             self.emit(record);
         }
+        saved?;
         applied?;
         let txid = refund?;
         let cleared = self.core.errors.lock().unwrap().remove(&record.swap_id);

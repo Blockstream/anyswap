@@ -115,7 +115,7 @@ fn setup(dir: PathBuf) -> anyhow::Result<(Driver<Wallet>, Arc<FileStore>)> {
             Chain::Bitcoin,
             BitcoinEsplora::new(ESPLORA_URL)?,
             ChainConfig::bitcoin(),
-        )
+        )?
         .with_signals(client.signals());
     Ok((driver, store))
 }

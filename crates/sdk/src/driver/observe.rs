@@ -332,9 +332,9 @@ pub(crate) fn poll(terms: &Terms, state: SwapState) -> Server {
     .and_then(|hex| crate::codec::parse_hash32(hex).ok())
     .filter(|preimage| sha256_payment_hash(preimage) == terms.payment_hash);
 
-    let label = state.status.clone();
+    let label = clip(state.status.clone(), 64);
     let error_type = state.error_type.clone();
-    let cancel_message = state.cancel_message.clone();
+    let cancel_message = state.cancel_message.clone().map(|text| clip(text, 256));
     let status = match terms.side {
         Side::Source => SwapIn::try_from(state)
             .ok()
@@ -361,4 +361,11 @@ pub(crate) fn poll(terms: &Terms, state: SwapState) -> Server {
         key,
         preimage,
     }
+}
+
+/// Server text cut to `max` bytes, so a record stays small whatever the
+/// server sends.
+fn clip(mut text: String, max: usize) -> String {
+    text.truncate(text.floor_char_boundary(max));
+    text
 }

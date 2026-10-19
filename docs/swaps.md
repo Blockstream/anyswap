@@ -61,14 +61,16 @@ then opens the on-chain output; the driver waits for it to confirm, hands the
 server the preimage that releases the payment, once, and claims the output to
 `claim_address` on the next pass: through the keypath when the server answered
 with its key, through the preimage path when it did not. The claim is rebuilt
-at the current fee rate each pass until it confirms.
+at the current fee rate each pass until it confirms, and outbids a spend still
+in the mempool: the server's CSV refund at `max_fee_rate`.
 
 A SwapOut ends in `Completed`, or in `Canceled` when it closes with the
 payment safe: the hold invoice expires back, or the server's CSV refund took
 the opening. A correct server never refunds an opening after it took our
 preimage, so the driver does not tell that case apart. The preimage goes out
 only while the fee estimate is within `max_fee_rate`, so the claim can pay
-it, and while at least `claim_margin` of the CSV is left. A driver away for
+it, and while at least `claim_margin` of the CSV is left. While the estimate
+is above it, `Confirming` carries it as `fee_rate_spike`. A driver away for
 that whole window keeps it and ends the swap once it is back, and the payment
 fails back once the server's CSV refund takes the opening.
 
@@ -80,10 +82,21 @@ fails back once the server's CSV refund takes the opening.
 |--------------|---------|-------------------------------------------------------------------------|
 | `Restoring`  | both    | Restored, before its first pass: where it stands is not known yet. |
 | `Funding`    | both    | Nothing on chain yet. Past `expires_at` the driver sends a cancel and keeps watching. SwapOut: it is no later than the expiry of `claim_invoice`, so it is the time to pay by. |
-| `Confirming` | both    | The opening has `confs` of `needed` confirmations. SwapOut: past `needed`, the preimage waits for the fee estimate to come within `max_fee_rate`. |
+| `Confirming` | both    | The opening has `confs` of `needed` confirmations. SwapOut: past `needed`, the preimage waits for the fee estimate to come within `max_fee_rate`, and `fee_rate_spike` is that estimate meanwhile. |
 | `Claiming`   | SwapOut | The preimage may have left: claiming the opening, with our `claim`, its `confs` and its `fee` once broadcast. |
 | `Completed`  | both    | Paid out; `opening` and `payout` are the txids. SwapOut: `fee` is what our claim paid, read from the confirmed transaction. |
 | `Canceled`   | both    | The swap did not happen, for `reason`. SwapOut: the payment is safe, and `opening` is set when it is left to the server's CSV refund. SwapIn: the deposit is the user's, in `funds`. |
+
+`fee` is the network fee of our own spend: a SwapOut claim here, a SwapIn
+refund on its funds. It is paid from the coins spent, not `base_fee`, so a
+SwapOut lands `receive_amount` minus its claim fee. It is `None` only with no
+spend of ours to read:
+
+| `fee` is `None`                  | Why                                       |
+|----------------------------------|-------------------------------------------|
+| SwapOut `Claiming` with no `claim` | not claimed yet                         |
+| SwapIn `Completed`               | the payout is the server's                |
+| a swap finished before 1.4.0     | not read since; `swap.step()` reads it    |
 
 A `Canceled` status says why in `reason`:
 
@@ -92,7 +105,7 @@ A `Canceled` status says why in `reason`:
 | `ServerCanceled`    | both    | The server gave the swap up, with its `error_type` and `cancel_message`. `UserCanceled` is any cancel the driver sent; `cancel_message` says whose. |
 | `CsvMatured`        | SwapIn  | The deposit's CSV matured with no word from the server.                  |
 | `ServerRefunded`    | SwapOut | The server's CSV refund took the opening.                                |
-| `ClaimWindowClosed` | SwapOut | Less than `claim_margin` of the CSV was left before the preimage went out. The payment fails back once the server's CSV refund takes the opening, from block `at`. |
+| `ClaimWindowClosed` | SwapOut | Less than `claim_margin` of the CSV was left before the preimage went out. The payment fails back once the server's CSV refund confirms, from block `at` at the earliest. |
 
 `Completed` and `Canceled` are terminal (`status.is_terminal()`). A
 terminal SwapOut goes quiet at once. A terminal SwapIn keeps getting passes
@@ -105,6 +118,42 @@ its refund.
 The record's `server_status` is the server's own label from the last pass.
 Show it so a swap waiting on the server says whom it waits for; the driver
 never acts on it.
+
+The transitions, one diagram per flow. An edge is what one pass did, and in
+brackets what it observed to do it. The funding timeout is 20 minutes, the
+default.
+
+SwapIn. The user deposits and the server pays the invoice; every deposit ends
+either claimed against a preimage the driver verified, or the user's to take
+back.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Funding: terms verified, record saved
+    Funding --> Funding: cancel sent [past the funding timeout, or cancel()]
+    Funding --> Confirming: deposit observed, confirmed or not
+    Funding --> Canceled: server key verified
+    Confirming --> Completed: refund key sent [preimage verified]
+    Confirming --> Canceled: server key verified, or CSV matured
+```
+
+SwapOut. The user pays a hold invoice and the server locks the payout on
+chain; nothing is at stake until the preimage leaves, and after that only a
+confirmed claim recovers the money.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Funding: terms verified, record saved
+    Funding --> Funding: cancel sent [past the funding timeout, or cancel()]
+    Funding --> Canceled: server reports Canceled
+    Funding --> Confirming: opening observed and verified
+    Confirming --> Confirming: preimage sent [confirmations reached, CSV to spare, fee estimate within the cap]
+    Confirming --> Claiming: preimage tried or seen in our claim, or server key verified
+    Confirming --> Canceled: claim window closed, or server's CSV refund confirmed
+    Claiming --> Claiming: claim [no spend of the opening in a block]
+    Claiming --> Completed: our claim confirmed
+    Claiming --> Canceled: server's CSV refund confirmed
+```
 
 ## Canceling
 
@@ -129,7 +178,7 @@ output the server took by its own path.
 
 | `FundState`  | Meaning                                                              |
 |--------------|----------------------------------------------------------------------|
-| `Locked`     | Under the CSV until `at`, or unconfirmed so its CSV has not started   |
+| `Locked`     | Under the CSV until `at`, or unconfirmed                             |
 | `Refundable` | Spendable now and worth its fee: the next refund takes it            |
 | `Dust`       | Spendable, but worth less than its fee at the last rate; `run` refunds it once the rate falls far enough |
 | `Refunding`  | In our refund `txid` paying `fee`, not yet in a block                |
@@ -143,6 +192,26 @@ refund key went to the server, so it shows `Locked` until block `at` and then
 refunds by the CSV path. Until then the server holds the preimage and both
 keys and can take it first. `run` only finds it within `refund_timeout` of the
 end; after that, `swap.step()` does.
+
+A rescan of a finished swap is `step`, then `funds`:
+
+```rust
+if let Some(swap) = driver.get(swap_id).await? {
+    swap.step().await?;
+    let funds = swap.funds().await?;
+}
+```
+
+| What | How `step` treats a finished swap |
+|---|---|
+| Reads | What any pass reads: the server's status, the address history with the mempool, and the spends of what it holds, also for a swap `run` no longer passes |
+| Updates | The status, `funds` and the rest of the record, saved and yielded to `subscribe` when they change. A late deposit is a new fund; the status stays as it was |
+| Afterwards | A found deposit keeps the swap in `run` until its refund is in a block, when the swap has a refund address or `with_destinations` is set. Without either it waits for `swap.refund(destination)` |
+| Beside `run` | Safe: `step` takes the swap's lock, as `run`'s pass does, and works on the record that pass saved |
+| Failure | Returns the `DriverError`, `Chain` for an Esplora outage, whose `retryable()` is true; calling again retries |
+
+It finds only what is already sent: a deposit sent after it needs another
+`step`.
 
 Every pass refunds what is `Refundable` in one transaction, keypath when it
 holds the server's key and CSV otherwise, in any status, unless a refund of
@@ -198,5 +267,5 @@ txid, or `None` while nothing is refundable.
 | `min_confs`      | 3       | 2      | Depth that releases a SwapOut claim, and closes a swap on a spend |
 | `claim_margin`   | 252     | 2520   | How much CSV must remain when the preimage goes out |
 | `max_refund_csv` | 1008    | 10080  | The longest CSV accepted on a SwapIn deposit        |
-| `max_fee_rate`   | 100     | 1      | The rate no spend goes above, in sat/vB; a SwapOut holds its preimage while the estimate is above it |
+| `max_fee_rate`   | 100     | 1      | The rate no spend goes above, in sat/vB, finite and positive; a SwapOut holds its preimage while the estimate is above it |
 | `block_time`     | 600 s   | 60 s   | Expected block interval, for mixed deadline math    |

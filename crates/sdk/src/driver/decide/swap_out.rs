@@ -95,6 +95,8 @@ fn confirming(
             txid: opening.utxo.txid.clone(),
             confs,
             needed: chain_config.min_confs,
+            fee_rate_spike: (observed.fee_rate > chain_config.max_fee_rate)
+                .then_some(observed.fee_rate),
         },
         action: send_preimage.then_some(Action::Send(Message::Preimage)),
     }
@@ -123,10 +125,13 @@ fn claiming(
 }
 
 /// A claim of the opening at the current fee rate: by keypath with the
-/// server's key, by preimage once the opening has `min_confs`. A spend still
-/// in the mempool is outbid, the server's refund at the fee ceiling. A
-/// pending preimage claim or refund is outbid by preimage, since the smaller
-/// keypath claim pays less in all at the same rate and is refused.
+/// server's key, by preimage once the opening has `min_confs` and the
+/// preimage was tried or seen on chain. A spend still in the mempool is
+/// outbid, the server's refund at the fee ceiling. A pending preimage claim
+/// or refund is outbid by preimage where it may go out, since the smaller
+/// keypath claim pays less in all at the same rate and can be refused. The
+/// server's key alone does not show the preimage left, so a refused keypath
+/// claim keeps it with us and the payment fails back.
 fn claim(
     record: &SwapRecord,
     observed: &Observed,
@@ -138,7 +143,8 @@ fn claim(
         // A spend in a block can no longer be replaced.
         return None;
     }
-    let preimage = observed.confs(opening.height) >= chain_config.min_confs;
+    let preimage = observed.confs(opening.height) >= chain_config.min_confs
+        && (record.sent.preimage || record.preimage.is_some());
     let path = match (record.dest.server_privkey, pending.map(|spend| spend.path)) {
         (Some(server_privkey), None | Some(SpendPath::Keypath)) => Path::Keypath { server_privkey },
         _ if preimage => Path::Preimage,

@@ -16,10 +16,8 @@ pub trait SwapStore: MaybeSend + MaybeSync {
 ```
 
 Back it with anything durable, persisting the record's serde JSON form
-unchanged: records carry a `version` field, and a future SDK can decode and
-upgrade old stores only if they kept that self-describing form. A table of
-JSON blobs keyed by `swap_id` is enough. The bundled `MemoryStore` is for
-tests.
+unchanged, `version` field included. A table of JSON blobs keyed by `swap_id`
+is enough. The bundled `MemoryStore` is for tests.
 
 Give each store one driver. In a browser, tabs over one store take turns on
 each swap through a Web Lock.
@@ -69,3 +67,21 @@ backs an ordinary BIP32 wallet shares no key with it.
 Keep the mnemonic, keep the store; the mnemonic alone recovers everything
 the server still lists, and the store covers a server that is unreachable
 or forgetful.
+
+## Records across releases
+
+A record holds no keys, so an SDK drives a record only when both match, its
+`version` and the way its keys are derived.
+
+| Written by | `version` | Keys derived from | Works with SDK 1.3.0 and later |
+|---|---|---|---|
+| SDK 1.2.0 | 1 | the seed itself, as BIP84 account keys | no |
+| SDK 1.3.0 and later | 1 | the seed tagged `anyswap/user-wallet/v2` | yes |
+
+A 1.2.0 record still loads, but the keys derived for it now are not the ones
+its script was built from, so the driver watches an address nothing was paid
+to. Within one version, a field a later SDK added reads as its default until a
+pass fills it, as `fee` does on a swap finished before 1.4.0. `swap.step()`
+makes that pass. A record of another `version` fails with
+`DriverError::RecordVersion`, and an older SDK may not read a record a newer
+one wrote.

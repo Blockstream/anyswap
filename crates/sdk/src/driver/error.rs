@@ -37,6 +37,9 @@ pub enum DriverError {
     #[error("chain {0} is not configured")]
     ChainNotConfigured(Chain),
 
+    #[error("chain {0} config: {1}")]
+    InvalidChainConfig(Chain, &'static str),
+
     #[error("swap {0} is not in the store")]
     Unknown(Uuid),
 
