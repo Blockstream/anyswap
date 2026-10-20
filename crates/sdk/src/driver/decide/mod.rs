@@ -100,3 +100,19 @@ pub(super) fn funding_deadline(
         .and_then(|bolt11| invoice::expiry_at(bolt11).ok())
         .map_or(window, |expiry| expiry.min(window))
 }
+
+/// When a SwapIn with nothing on chain cancels: `min_confs + 1` blocks
+/// before the claim invoice expires, so a deposit made by then confirms in
+/// time. Never later than `funding_timeout` after `started_at`.
+pub(super) fn deposit_deadline(
+    started_at: Timestamp,
+    claim_invoice: Option<&str>,
+    config: &Config,
+    chain_config: &ChainConfig,
+) -> Timestamp {
+    let window = started_at + config.funding_timeout.as_secs();
+    let confirm = (u64::from(chain_config.min_confs) + 1) * chain_config.block_time;
+    claim_invoice
+        .and_then(|bolt11| invoice::expiry_at(bolt11).ok())
+        .map_or(window, |expiry| expiry.saturating_sub(confirm).min(window))
+}

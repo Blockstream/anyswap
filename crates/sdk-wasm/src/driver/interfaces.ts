@@ -88,6 +88,8 @@ export interface Quote {
   quote_id: string;
   /** Unix seconds. */
   expires_at: number;
+  /** Swap-in: how long after creation the server waits for the deposit to confirm, in seconds, and so the expiry to give the claim invoice. */
+  await_opening_tx: number | null;
 }
 
 /** The end a quote is pinned by: the amount to receive, or the amount to send, in sats. */

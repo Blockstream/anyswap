@@ -22,7 +22,7 @@ use uuid::Uuid;
 
 use super::{
     Driver, Handle, MaybeSend, MaybeSync,
-    decide::funding_deadline,
+    decide::{deposit_deadline, funding_deadline},
     error::{DriverError, Refusal},
     observe::{driven, poll},
     record::{Endpoint, Sent, ServerStatus, Status, SwapRecord, Timestamp},
@@ -57,6 +57,10 @@ pub struct Quote {
     pub fee: u64,
     pub quote_id: Uuid,
     pub expires_at: Timestamp,
+    /// SwapIn: how long after creation the server waits for the deposit to
+    /// confirm, in seconds, and so the expiry to give the claim invoice.
+    #[serde(default)]
+    pub await_opening_tx: Option<u64>,
 }
 
 /// Which end of a quote the caller pins: the amount they receive, or the
@@ -173,6 +177,7 @@ pub(crate) fn quote(
         fee: send_amount - receive_amount,
         quote_id,
         expires_at: now + info.quote_ttl,
+        await_opening_tx: matches!(side, Side::Source).then_some(policy.timeouts.await_opening_tx),
     })
 }
 
@@ -208,8 +213,8 @@ impl<W: SwapWallet + MaybeSend + MaybeSync + 'static> Driver<W> {
         let wallet = ctx.wallet();
         let id = &req.swap_id;
         let refused = |e: &dyn std::fmt::Display| Refusal::Wallet(e.to_string());
-        let funding = |bolt11: Option<&str>| Status::Funding {
-            expires_at: funding_deadline(started_at, bolt11, config),
+        let funding = |expires_at| Status::Funding {
+            expires_at,
             cancel_sent: false,
         };
         let server_status = Some(state.status.clone());
@@ -240,11 +245,12 @@ impl<W: SwapWallet + MaybeSend + MaybeSync + 'static> Driver<W> {
                 if Some(msat) != swap.receive_amount.checked_mul(1000) {
                     return Err(Refusal::Invoice("amount is not the receive amount".into()).into());
                 }
-                let room = config.funding_timeout.as_secs()
-                    + (u64::from(chain_config.min_confs) + 1) * chain_config.block_time;
+                let room = (u64::from(chain_config.min_confs) + 1) * chain_config.block_time;
                 if invoice::expiry_at(claim_invoice).map_err(invoice_error)? < started_at + room {
                     return Err(Refusal::Invoice("expires too soon".into()).into());
                 }
+                let expires_at =
+                    deposit_deadline(started_at, Some(claim_invoice), config, chain_config);
                 csv_in_range(swap.csv, 1, chain_config.max_refund_csv)?;
                 let refund_address = req.user_refund_address.as_deref();
                 if swap.refund_address.as_deref() != refund_address {
@@ -270,7 +276,7 @@ impl<W: SwapWallet + MaybeSend + MaybeSync + 'static> Driver<W> {
                     base_fee: swap.base_fee,
                     service_fee: swap.service_fee,
                     started_at,
-                    status: funding(None),
+                    status: funding(expires_at),
                     funds: Vec::new(),
                     ended_at: None,
                     preimage: None,
@@ -331,7 +337,7 @@ impl<W: SwapWallet + MaybeSend + MaybeSync + 'static> Driver<W> {
                     chain_config.min_confs + chain_config.claim_margin,
                     0xFFFF,
                 )?;
-                let status = funding(Some(hold_invoice));
+                let status = funding(funding_deadline(started_at, Some(hold_invoice), config));
                 let terms = swap.terms();
                 SwapRecord {
                     version: SwapRecord::VERSION,

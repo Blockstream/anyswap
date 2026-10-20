@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.6.0]
+
+- **Breaking:** `Status::Confirming` gains `max_fee_rate`, the chain's, so a
+  `fee_rate_spike` can be shown against it.
+- **Breaking:** `Quote` gains `await_opening_tx`, how long after creation the
+  server waits for a SwapIn deposit to confirm, and so the expiry to give the
+  claim invoice.
+
+### Minor
+
+- A SwapIn's `Funding` `expires_at` is `min_confs + 1` blocks before the claim
+  invoice expires, so a deposit made by then confirms in time.
+  `funding_timeout` only caps it and defaults to 24 h, where it was 20 min. A
+  claim invoice needs to outlast `min_confs + 1` blocks, where it needed
+  `funding_timeout` more.
+
 ## [1.5.0]
 
 - **Breaking:** `Status::Confirming` gains `fee_rate_spike`, the fee estimate

@@ -95,6 +95,7 @@ fn confirming(
             txid: opening.utxo.txid.clone(),
             confs,
             needed: chain_config.min_confs,
+            max_fee_rate: chain_config.max_fee_rate,
             fee_rate_spike: (observed.fee_rate > chain_config.max_fee_rate)
                 .then_some(observed.fee_rate),
         },

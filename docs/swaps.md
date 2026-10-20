@@ -23,10 +23,12 @@ and `service_fee` as the server split the swap's own fee.
 
 ## SwapIn: on-chain to Lightning
 
-Mint an invoice on your Lightning node for exactly `quote.receive_amount`
-and create the swap with it. Acceptance refuses an invoice whose amount
-differs or whose expiry does not outlast the funding window, so give it a
-comfortable expiry.
+Mint an invoice on your Lightning node for exactly `quote.receive_amount`,
+expiring in `quote.await_opening_tx` seconds, and create the swap with it.
+Acceptance refuses an invoice whose amount differs or that expires within
+`min_confs + 1` blocks. The time to deposit ends `min_confs + 1` blocks
+before the invoice expires. The server stops waiting at `await_opening_tx`,
+so a longer invoice shows more time than the server keeps.
 
 ```rust
 let swap = driver.swap_in(quote, bolt11, Some(refund_address)).await?;
@@ -70,7 +72,8 @@ the opening. A correct server never refunds an opening after it took our
 preimage, so the driver does not tell that case apart. The preimage goes out
 only while the fee estimate is within `max_fee_rate`, so the claim can pay
 it, and while at least `claim_margin` of the CSV is left. While the estimate
-is above it, `Confirming` carries it as `fee_rate_spike`. A driver away for
+is above it, `Confirming` carries it as `fee_rate_spike`, beside the limit as
+`max_fee_rate`. A driver away for
 that whole window keeps it and ends the swap once it is back, and the payment
 fails back once the server's CSV refund takes the opening.
 
@@ -81,7 +84,7 @@ fails back once the server's CSV refund takes the opening.
 | Status       | Flow    | Meaning                                                                 |
 |--------------|---------|-------------------------------------------------------------------------|
 | `Restoring`  | both    | Restored, before its first pass: where it stands is not known yet. |
-| `Funding`    | both    | Nothing on chain yet. Past `expires_at` the driver sends a cancel and keeps watching. SwapOut: it is no later than the expiry of `claim_invoice`, so it is the time to pay by. |
+| `Funding`    | both    | Nothing on chain yet. Past `expires_at` the driver sends a cancel and keeps watching. `expires_at` is the time to pay by. SwapIn: `min_confs + 1` blocks before the invoice expires. SwapOut: no later than the expiry of `claim_invoice`. |
 | `Confirming` | both    | The opening has `confs` of `needed` confirmations. SwapOut: past `needed`, the preimage waits for the fee estimate to come within `max_fee_rate`, and `fee_rate_spike` is that estimate meanwhile. |
 | `Claiming`   | SwapOut | The preimage may have left: claiming the opening, with our `claim`, its `confs` and its `fee` once broadcast. |
 | `Completed`  | both    | Paid out; `opening` and `payout` are the txids. SwapOut: `fee` is what our claim paid, read from the confirmed transaction. |
@@ -216,7 +219,10 @@ It finds only what is already sent: a deposit sent after it needs another
 Every pass refunds what is `Refundable` in one transaction, keypath when it
 holds the server's key and CSV otherwise, in any status, unless a refund of
 ours is still `Refunding`. A transaction takes at most 8 funds, the most
-valuable first, and the rest go on the first pass after it is in a block. A
+valuable first; the rest stay `Refundable`, with no queued state, and go on
+the first pass after it is in a block. Its
+fee rate is the estimate, capped at `max_fee_rate`: a refund never waits for
+the rate to fall, as a SwapOut's preimage does. A
 swap can see several refunds, each fund carrying the txid of the one that took
 it. It pays the refund address given to
 `swap_in`, which travels in the signed request. A swap created without one
@@ -251,7 +257,7 @@ txid, or `None` while nothing is refundable.
 
 | Knob              | Default | Meaning                                                        |
 |-------------------|---------|----------------------------------------------------------------|
-| `funding_timeout` | 20 min  | From creation: when a swap with nothing on chain cancels, or a SwapOut's hold invoice expiry if sooner |
+| `funding_timeout` | 24 h    | From creation: the latest a swap with nothing on chain cancels; the invoice's expiry or the server's cancel ends it sooner |
 | `poll_interval`   | 15 s    | The longest wait between passes without a server signal        |
 | `server_timeout`  | 30 s    | How long a call to the server may go unanswered before it fails as a transport error |
 | `fee_conf_target` | 3 blocks| The target every fee estimate is read at                       |
@@ -267,5 +273,5 @@ txid, or `None` while nothing is refundable.
 | `min_confs`      | 3       | 2      | Depth that releases a SwapOut claim, and closes a swap on a spend |
 | `claim_margin`   | 252     | 2520   | How much CSV must remain when the preimage goes out |
 | `max_refund_csv` | 1008    | 10080  | The longest CSV accepted on a SwapIn deposit        |
-| `max_fee_rate`   | 100     | 1      | The rate no spend goes above, in sat/vB, finite and positive; a SwapOut holds its preimage while the estimate is above it |
+| `max_fee_rate`   | 100     | 1      | The rate no spend goes above, in sat/vB, finite and positive; a SwapOut holds its preimage while the estimate is above it, and a SwapIn refund pays it |
 | `block_time`     | 600 s   | 60 s   | Expected block interval, for mixed deadline math    |

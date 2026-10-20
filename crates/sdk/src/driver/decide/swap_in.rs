@@ -1,6 +1,6 @@
 //! SwapIn: the deposit, the invoice it pays for, and the refund of what is ours.
 
-use super::{Action, Decision, Message, funding_deadline};
+use super::{Action, Decision, Message, deposit_deadline};
 use crate::{
     driver::{
         config::{ChainConfig, Config},
@@ -33,14 +33,24 @@ pub(super) fn decide(
             canceled(Some(opening), CancelReason::CsvMatured)
         }
         (None, _, Some(opening)) => confirming(observed, chain_config, opening),
-        (None, _, None) => funding(record, observed, config),
+        (None, _, None) => funding(record, observed, config, chain_config),
     }
 }
 
 /// No deposit yet. Past the funding deadline the driver asks the server to
 /// cancel, and the swap ends once the server's key arrives with its answer.
-fn funding(record: &SwapRecord, observed: &Observed, config: &Config) -> Decision {
-    let expires_at = funding_deadline(record.started_at, None, config);
+fn funding(
+    record: &SwapRecord,
+    observed: &Observed,
+    config: &Config,
+    chain_config: &ChainConfig,
+) -> Decision {
+    let expires_at = deposit_deadline(
+        record.started_at,
+        record.dest.invoice.as_deref(),
+        config,
+        chain_config,
+    );
     let send_cancel = observed.now >= expires_at && !record.sent.cancel;
     Decision {
         status: Status::Funding {
@@ -58,6 +68,7 @@ fn confirming(observed: &Observed, chain_config: &ChainConfig, opening: &Output)
             txid: opening.utxo.txid.clone(),
             confs: observed.confs(opening.height),
             needed: chain_config.min_confs,
+            max_fee_rate: chain_config.max_fee_rate,
             fee_rate_spike: None,
         },
         action: None,

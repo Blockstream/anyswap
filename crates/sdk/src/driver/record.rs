@@ -244,12 +244,15 @@ pub enum Status {
         expires_at: Timestamp,
         cancel_sent: bool,
     },
-    /// SwapOut: `fee_rate_spike` is the fee estimate, in sat/vB, while it is
-    /// above `max_fee_rate` and holds the preimage.
+    /// `max_fee_rate` is the chain's, in sat/vB. SwapOut: `fee_rate_spike` is
+    /// the fee estimate while it is above `max_fee_rate` and holds the
+    /// preimage.
     Confirming {
         txid: String,
         confs: u32,
         needed: u32,
+        #[serde(default)]
+        max_fee_rate: f64,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         fee_rate_spike: Option<f64>,
     },
@@ -288,7 +291,7 @@ impl Status {
     }
 }
 
-// `fee_rate_spike` is above a finite `max_fee_rate`, so it is never NaN.
+// `max_fee_rate` is finite and `fee_rate_spike` is above it, so neither is NaN.
 impl Eq for Status {}
 
 /// Why a swap ended `Canceled`.

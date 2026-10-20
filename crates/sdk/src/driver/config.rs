@@ -4,8 +4,8 @@ use std::time::Duration;
 /// counted on the driver's own clock, never from a time the server reports.
 #[derive(Clone, Debug)]
 pub struct Config {
-    /// From `started_at`: when a swap with nothing on chain closes, or a
-    /// SwapOut's hold invoice expiry if sooner.
+    /// From `started_at`: the latest a swap with nothing on chain closes. Its
+    /// invoice's expiry, or the server's cancel, ends it sooner.
     pub funding_timeout: Duration,
     /// The longest a loop waits between passes without a server notification.
     pub poll_interval: Duration,
@@ -29,7 +29,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            funding_timeout: Duration::from_secs(1200),
+            funding_timeout: Duration::from_secs(86_400),
             poll_interval: Duration::from_secs(15),
             server_timeout: Duration::from_secs(30),
             fee_conf_target: 3,
