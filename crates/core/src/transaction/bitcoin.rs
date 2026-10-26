@@ -40,6 +40,9 @@ pub const REFUND_VSIZE: u64 = 138;
 /// Opening tx: one funding input plus change.
 pub const OPENING_VSIZE: u64 = 154;
 
+/// The largest dust floor of any address type, P2PKH's.
+pub const MAX_DUST: u64 = 546;
+
 /// Cooperative MuSig2 keypath spend, used for both `claim_by_keypath` and
 /// `refund_by_keypath`. Once the counterparty has revealed its half, the
 /// caller holds both privkeys and signs locally; each input's witness is just
@@ -382,7 +385,10 @@ pub fn sat_per_vb(fee_rate: f64) -> Result<FeeRate, TxError> {
 
 #[cfg(test)]
 mod tests {
-    use bitcoin::{Txid, hashes::sha256, secp256k1::XOnlyPublicKey};
+    use bitcoin::{
+        PubkeyHash, ScriptHash, Txid, WPubkeyHash, WScriptHash, hashes::sha256,
+        secp256k1::XOnlyPublicKey,
+    };
 
     use super::*;
 
@@ -629,6 +635,20 @@ mod tests {
         assert_eq!(opening_tx(&f, 1).vsize(), OPENING_VSIZE as usize);
         assert_eq!(opening_tx(&f, 2).vsize(), 212);
         assert_eq!(opening_tx(&f, 3).vsize(), 269);
+    }
+
+    #[test]
+    fn max_dust_is_the_largest_floor() {
+        let floors = [
+            ScriptBuf::new_p2pkh(&PubkeyHash::from_byte_array([0; 20])),
+            ScriptBuf::new_p2sh(&ScriptHash::from_byte_array([0; 20])),
+            ScriptBuf::new_p2wpkh(&WPubkeyHash::from_byte_array([0; 20])),
+            ScriptBuf::new_p2wsh(&WScriptHash::from_byte_array([0; 32])),
+            fixture().destination,
+        ]
+        .map(|script| script.minimal_non_dust().to_sat());
+
+        assert_eq!(floors.into_iter().max(), Some(MAX_DUST));
     }
 
     #[test]

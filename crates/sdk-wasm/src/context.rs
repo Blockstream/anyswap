@@ -41,6 +41,7 @@ impl SwapContext {
     }
 }
 
+#[cfg(target_arch = "wasm32")]
 impl SwapContext {
     pub(crate) fn inner(&self) -> &SdkSwapContext<SdkWallet> {
         &self.inner

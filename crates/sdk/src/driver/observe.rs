@@ -190,12 +190,13 @@ pub(crate) async fn observe(
         Side::Dest => record.receive_amount,
     };
     let opening = opening(&outputs, amount).map(|output| output.utxo.outpoint());
-    let refund_fee = utxo::refund_fee(terms.chain, fee_rate.min(chain.config.max_fee_rate));
+    let refund_threshold =
+        utxo::refund_threshold(terms.chain, fee_rate.min(chain.config.max_fee_rate));
     let (openings, mut strays): (Vec<_>, Vec<_>) = outputs
         .iter_mut()
         .filter(|output| output.spend.is_none())
         .partition(|output| opening == Some(output.utxo.outpoint()));
-    strays.retain(|output| stray_read(record, terms, tip, refund_fee, output));
+    strays.retain(|output| stray_read(record, terms, tip, refund_threshold, output));
     strays.sort_by_key(|output| (!refunding(record, output), Reverse(output.value)));
     strays.truncate(FUNDS_PER_PASS);
     for output in openings {
@@ -248,16 +249,16 @@ fn confs(tip: Height, height: Option<Height>) -> u32 {
     height.map_or(0, |height| tip.saturating_sub(height) + 1)
 }
 
-/// SwapIn: a stray in a refund of ours, or one worth its refund fee and not
-/// locked, since nothing acts on a locked one. A SwapOut reads no stray.
+/// SwapIn: a stray in a refund of ours, or one above its refund threshold and
+/// not locked, since nothing acts on a locked one. A SwapOut reads no stray.
 fn stray_read(
     record: &SwapRecord,
     terms: &Terms,
     tip: Height,
-    refund_fee: Option<u64>,
+    refund_threshold: Option<u64>,
     output: &Output,
 ) -> bool {
-    let refundable = refund_fee.is_some_and(|fee| output.value > fee)
+    let refundable = refund_threshold.is_some_and(|threshold| output.value > threshold)
         && !record.locked(terms.csv, confs(tip, output.height));
     terms.side == Side::Source && (refundable || refunding(record, output))
 }

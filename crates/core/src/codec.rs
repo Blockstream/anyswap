@@ -1,4 +1,4 @@
-//! String and hex codecs shared by the SDK, bindings, and plugin-facing code.
+//! String and hex codecs shared by the SDK, the bindings and the server.
 //!
 //! Wire DTOs speak strings while core transaction builders require typed values.
 

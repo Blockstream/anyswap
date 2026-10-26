@@ -1,0 +1,65 @@
+---
+title: Platforms
+---
+
+# Platforms
+
+The TypeScript SDK runs the Rust driver compiled to wasm, so both behave the
+same. This page lists what differs.
+
+## Rust
+
+| Feature   | Default | Adds                                                        |
+| --------- | ------- | ----------------------------------------------------------- |
+| `client`  | yes     | `HttpClient`                                                |
+| `ws`      | yes     | the server's WebSocket as the driver's signals; native only |
+| `driver`  | yes     | the driver                                                  |
+| `esplora` | no      | `BitcoinEsplora` and `LiquidEsplora`                        |
+
+| Target | Runtime                                                                                                                                                            |
+| ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Native | `run` is a future for tokio: `tokio::spawn(driver.run())`.                                                                                                         |
+| wasm32 | Interfaces carry no `Send` or `Sync` bounds, so an implementation is `#[async_trait(?Send)]`. `anyswap_sdk::driver::spawn` runs `run` on the browser's event loop. |
+
+Esplora requests time out after 30 seconds; `with_timeout` sets another.
+
+The script, transaction builders and typed swap views the driver runs on are
+public, in `script`, `transaction`, `swap_in` and `swap_out`, for a port or an
+audit.
+
+## TypeScript
+
+| Topic         | Rule                                                                                                                                                                                   |
+| ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Loading       | `await initializeWasm()` once, before any other call. A browser fetches the wasm from unpkg; pass its URL to `initializeWasm` to serve it yourself. Node reads it from `node_modules`. |
+| Amounts       | A quote target is a `bigint`. Amounts in quotes and records are decimal strings, so a JSON round trip keeps every bit.                                                                 |
+| Absent values | `null` in records and statuses, `undefined` from calls.                                                                                                                                |
+| Errors        | A driver call throws `DriverError`, with `code`, `retryable` and `httpStatus`. A call on `AnySwapClient` directly throws `AnySwapError`, with `code` and `status`.                     |
+| Esplora       | Requests time out after 30 seconds. `new BitcoinEsplora(url, fetch, { timeout, signal })` sets another timeout, and `signal` aborts every request for good.                            |
+| Signals       | `client.signals(userId, { onConnectionChange })` reports when the WebSocket drops and when it is back.                                                                                 |
+
+Aborting Esplora is safe at any time, but a SwapOut in `Claiming` needs the
+driver running until its claim confirms.
+
+## Browsers
+
+Tabs over one store take turns on each swap through a Web Lock, so several
+tabs can run a driver over the same IndexedDB. This holds for the TypeScript
+SDK and for Rust on wasm32.
+
+## Your own chain client
+
+`BitcoinEsplora` and `LiquidEsplora` are the bundled chain clients. Another
+backend, such as Electrum, implements the chain client interface:
+
+| Method                                            | Returns                                                                             |
+| ------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| <Id rust="height" ts="getHeight" />               | the tip height                                                                      |
+| <Id rust="fee_rate" ts="getFeeRate" />            | the fee estimate for `target` blocks, in sat/vB                                     |
+| <Id rust="address_history" ts="addressHistory" /> | every transaction paying or spending the address, mempool included, with its height |
+| `outspend`                                        | the transaction spending an output, mempool included, or none                       |
+| `broadcast`                                       | the txid                                                                            |
+
+`outspend` must read the output itself, not the address history: a crowded
+history can hide a pending claim or refund. Each method bounds its own
+requests, since the driver waits as long as a call takes.

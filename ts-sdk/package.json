@@ -1,0 +1,78 @@
+{
+  "name": "@blockstream/anyswap-sdk",
+  "version": "1.7.0",
+  "description": "AnySwap TypeScript SDK",
+  "homepage": "https://blockstream.github.io/anyswap/",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Blockstream/anyswap.git",
+    "directory": "ts-sdk"
+  },
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    },
+    "./esplora": {
+      "types": "./dist/esplora.d.ts",
+      "import": "./dist/esplora.js",
+      "require": "./dist/esplora.cjs"
+    }
+  },
+  "imports": {
+    "#wasm-loader": {
+      "node": {
+        "types": "./dist/wasm/loader-node.d.ts",
+        "import": "./dist/wasm/loader-node.js",
+        "require": "./dist/wasm/loader-node.cjs"
+      },
+      "default": {
+        "types": "./dist/wasm/loader-browser.d.ts",
+        "import": "./dist/wasm/loader-browser.js",
+        "require": "./dist/wasm/loader-browser.cjs"
+      }
+    }
+  },
+  "files": [
+    "dist",
+    "wasm",
+    "CHANGELOG.md"
+  ],
+  "scripts": {
+    "generate": "swagger-typescript-api generate --path ../api.yaml --no-client --just-types --responses -o ./src/generated -n api.ts",
+    "docs:generate": "typedoc",
+    "build": "npm run generate && tsup",
+    "dev": "tsup --watch",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.examples.json",
+    "example:swaps": "tsx examples/swaps.ts",
+    "example:advance": "tsx examples/advance.ts",
+    "fmt": "prettier --write 'src/**/*.ts' 'examples/**/*.ts'",
+    "lint": "prettier --check 'src/**/*.ts' 'examples/**/*.ts'",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "@blockstream/anyswap-wasm": "file:../crates/sdk-wasm/pkg"
+  },
+  "devDependencies": {
+    "@noble/secp256k1": "3.1.0",
+    "@types/node": "^22.0.0",
+    "prettier": "^3.8.1",
+    "swagger-typescript-api": "^13.6.10",
+    "tsup": "^8.0.0",
+    "tsx": "^4.21.0",
+    "typedoc": "^0.28.19",
+    "typedoc-plugin-markdown": "^4.11.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  }
+}

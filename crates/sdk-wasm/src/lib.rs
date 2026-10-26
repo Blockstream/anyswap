@@ -1,17 +1,14 @@
 //! WASM bindings for the AnySwap client SDK.
 //!
-//! Thin `wasm-bindgen` wrapper over [`anyswap_sdk`] for browser/JS callers:
-//! BIP39/BIP32 key derivation ([`wallet::Wallet`]), the client-wide
-//! [`context::SwapContext`], and typed swap views with transaction builders
-//! ([`swap_in::SwapIn`], [`swap_out::SwapOut`]). Plus free functions for BOLT11
-//! invoice parsing, swap_fee calculation, mnemonic handling, swap id minting,
-//! and the protocol version.
+//! Thin `wasm-bindgen` wrapper over [`anyswap_sdk`] for browser/JS callers. The
+//! [`driver`] runs whole swaps: the page hands it a server client, a chain
+//! client and a store written in JS, and the loop runs in Rust over them.
+//! Beside it are the key derivation it runs on ([`wallet::Wallet`]), the
+//! client-wide [`context::SwapContext`], request signing ([`auth`]), and free
+//! functions for BOLT11 invoice parsing, the swap fee, mnemonic handling, swap
+//! id minting and the protocol version.
 //!
-//! HTTP is intentionally out of scope - the browser does its own `fetch`. Parse
-//! the server's swap-state JSON into a JS object and hand it to
-//! `SwapIn.fromResponse` / `SwapOut.fromResponse`. The [`driver`] runs whole
-//! swaps on the same terms: the page hands it a server client, a chain client
-//! and a store written in JS, and the loop runs in Rust over them.
+//! HTTP is out of scope: the browser does its own `fetch`.
 
 use std::str::FromStr;
 
@@ -23,9 +20,6 @@ pub mod config;
 pub mod context;
 #[cfg(target_arch = "wasm32")]
 pub mod driver;
-pub mod swap_in;
-pub mod swap_out;
-pub mod utxo;
 pub mod wallet;
 
 #[wasm_bindgen(start)]
@@ -75,27 +69,6 @@ pub fn network_from_invoice(bolt11: &str) -> Result<String, JsError> {
 #[wasm_bindgen(js_name = swapFee)]
 pub fn swap_fee(receive_amount: u64, service_ppm: u32, base_fee: u64) -> u64 {
     anyswap_sdk::fee::swap_fee(receive_amount, service_ppm.into(), base_fee)
-}
-
-/// The proportional service fee: `receive_amount * service_ppm / 1_000_000`, saturating at
-/// `u64::MAX`.
-#[wasm_bindgen(js_name = serviceFee)]
-pub fn service_fee(receive_amount: u64, service_ppm: u32) -> u64 {
-    anyswap_sdk::fee::service_fee(receive_amount, service_ppm.into())
-}
-
-/// The least the user must send to receive `receiveAmount`; `undefined` on
-/// overflow.
-#[wasm_bindgen(js_name = minSendForReceive)]
-pub fn min_send_for_receive(receive_amount: u64, service_ppm: u32, base_fee: u64) -> Option<u64> {
-    anyswap_sdk::fee::min_send_for_receive(receive_amount, service_ppm.into(), base_fee)
-}
-
-/// The most the user can receive for `sendAmount`; `undefined` when it does
-/// not cover `baseFee`.
-#[wasm_bindgen(js_name = maxReceiveForSend)]
-pub fn max_receive_for_send(send_amount: u64, service_ppm: u32, base_fee: u64) -> Option<u64> {
-    anyswap_sdk::fee::max_receive_for_send(send_amount, service_ppm.into(), base_fee)
 }
 
 /// Generates a random mnemonic; `word_count` must be 12, 15, 18, 21, or 24.

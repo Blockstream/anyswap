@@ -37,8 +37,8 @@ pub const CLAIM_VSIZE: u64 = 250;
 /// Script-path CSV refund size for base-fee quotes.
 pub const REFUND_VSIZE: u64 = 250;
 
-/// Opening transaction size for base-fee quotes, covering the confidential
-/// change output `elementsd` adds alongside the swap output.
+/// Opening transaction size for base-fee quotes, covering a confidential
+/// change output alongside the swap output.
 pub const OPENING_VSIZE: u64 = 350;
 
 /// The most inputs a builder spends: the destination's surjection proof covers
@@ -1029,9 +1029,9 @@ mod tests {
         assert_eq!(destination_secrets.value, values.iter().sum::<u64>() - fee);
     }
 
-    /// An opening as `elementsd` funds it: the swap output plus a confidential
-    /// change output. The builders never produce this shape, so it is assembled
-    /// from a claim to size `OPENING_VSIZE`.
+    /// An opening with the swap output plus a confidential change output. The
+    /// builders never produce this shape, so it is assembled from a claim to
+    /// size `OPENING_VSIZE`.
     fn opening_shaped_tx(fixture: &Fixture, claim: &Transaction) -> Transaction {
         let mut tx = claim.clone();
         tx.output

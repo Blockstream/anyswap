@@ -1,0 +1,65 @@
+/* The Swaps-UI palette. Light mode darkens the brand cyan, which is too pale
+   for text on white. */
+:root {
+  --ifm-color-primary: #0070b2;
+  --ifm-color-primary-dark: #0065a0;
+  --ifm-color-primary-darker: #005f97;
+  --ifm-color-primary-darkest: #004e7d;
+  --ifm-color-primary-light: #0085d3;
+  --ifm-color-primary-lighter: #008fe4;
+  --ifm-color-primary-lightest: #17a9ff;
+  --ifm-code-font-size: 92%;
+  --ifm-table-stripe-background: transparent;
+  --ifm-table-head-background: var(--ifm-color-emphasis-100);
+  --ifm-table-border-color: var(--ifm-color-emphasis-200);
+  --docusaurus-highlighted-code-line-bg: rgba(0, 0, 0, 0.1);
+}
+
+/* html raises the specificity above Infima's own dark background. */
+html[data-theme="dark"] {
+  --ifm-color-primary: #00bcff;
+  --ifm-color-primary-dark: #00a9e6;
+  --ifm-color-primary-darker: #00a0d9;
+  --ifm-color-primary-darkest: #0084b3;
+  --ifm-color-primary-light: #1ac3ff;
+  --ifm-color-primary-lighter: #26c6ff;
+  --ifm-color-primary-lightest: #4dd0ff;
+  --ifm-background-color: #111316;
+  --ifm-background-surface-color: #171a1f;
+  --ifm-footer-background-color: #171a1f;
+  --ifm-table-head-background: #1e2024;
+  --docusaurus-highlighted-code-line-bg: rgba(0, 0, 0, 0.3);
+}
+
+.navbar__logo {
+  height: 1.75rem;
+}
+
+table thead th {
+  text-align: left;
+}
+
+/* The doc sidebar stays fixed to the window at full height, and the footer
+   sits beside it. Sticky, as Docusaurus has it, the footer pushes the sidebar
+   up and hides its first items under the navbar. */
+@media (min-width: 997px) {
+  html.docs-doc-page .theme-doc-sidebar-container {
+    clip-path: none;
+  }
+
+  html.docs-doc-page [class*="sidebarViewport_"] {
+    position: fixed;
+    top: 0;
+    width: var(--doc-sidebar-width);
+    border-right: 1px solid var(--ifm-toc-border-color);
+  }
+
+  html.docs-doc-page .footer {
+    margin-left: var(--doc-sidebar-width);
+  }
+}
+
+.docusaurus-mermaid-container > svg {
+  display: block;
+  margin: 0 auto;
+}

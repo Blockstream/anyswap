@@ -1,0 +1,174 @@
+---
+title: Quickstart
+---
+
+# Quickstart
+
+One SwapOut on Bitcoin, from setup to `Completed`. The switch in the navbar
+picks the language of every snippet on the site.
+
+## 1. Build the driver
+
+<Code>
+<Rust>
+
+```rust
+use anyswap_sdk::{
+    bitcoin::PrivateKey,
+    client::HttpClient,
+    context::SwapContext,
+    driver::{ChainConfig, Driver, MemoryStore, TargetAmount},
+    esplora::BitcoinEsplora,
+    types::{Chain, SwapNetwork},
+    wallet::Wallet,
+};
+
+const NETWORK: SwapNetwork = SwapNetwork::Mainnet;
+
+let (wallet, mnemonic) = Wallet::generate(NETWORK)?;
+let identity = PrivateKey::new(wallet.identity_privkey()?, NETWORK.bitcoin_network());
+let client = HttpClient::new("https://anyswap.example.com", Some(identity));
+
+let driver = Driver::new(SwapContext::new(wallet), client.clone(), MemoryStore::default())
+    .with_chain(
+        Chain::Bitcoin,
+        BitcoinEsplora::new("https://esplora.example.com/api")?,
+        ChainConfig::bitcoin(),
+    )?
+    .with_signals(client.signals());
+```
+
+</Rust>
+<Ts>
+
+```ts
+import {
+  initializeWasm,
+  AnySwapClient,
+  Chain,
+  Driver,
+  MemoryStore,
+  SwapContext,
+  SwapNetwork,
+  Wallet,
+  generateMnemonic,
+} from "@blockstream/anyswap-sdk";
+import { BitcoinEsplora } from "@blockstream/anyswap-sdk/esplora";
+
+await initializeWasm();
+
+const NETWORK = SwapNetwork.Mainnet;
+
+const mnemonic = generateMnemonic(24);
+const wallet = Wallet.fromMnemonic(mnemonic, NETWORK);
+const client = new AnySwapClient("https://anyswap.example.com", {
+  auth: { identityPrivkey: wallet.identityPrivkey },
+});
+
+const driver = new Driver(new SwapContext(wallet), client, new MemoryStore())
+  .withChain(Chain.Bitcoin, new BitcoinEsplora("https://esplora.example.com/api"))
+  .withSignals(client.signals(wallet.userId));
+```
+
+</Ts>
+</Code>
+
+| Object                                      | Holds                                                                                         |
+| ------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| `Wallet`                                    | every key, derived from the mnemonic; the mnemonic restores every swap                        |
+| <Id rust="HttpClient" ts="AnySwapClient" /> | the server API, signing each request as the wallet                                            |
+| `SwapContext`                               | the wallet, plus the Liquid parameters when you swap there                                    |
+| `BitcoinEsplora`                            | chain reads and broadcasts; a chain without one cannot be swapped on                          |
+| `MemoryStore`                               | the swap records, forgotten on exit; a real app passes a durable store                        |
+| Signals                                     | the server's WebSocket, which wakes the driver when a swap moves; without it the driver polls |
+
+## 2. Quote
+
+<Code>
+<Rust>
+
+```rust
+let quote = driver
+    .quote(None, Some(Chain::Bitcoin), TargetAmount::Receive(50_000))
+    .await?;
+println!("pay {}, receive {}", quote.send_amount, quote.receive_amount);
+```
+
+</Rust>
+<Ts>
+
+```ts
+const quote = await driver.quote("lightning", { chain: Chain.Bitcoin }, { receive: 50_000n });
+console.log(`pay ${quote.send_amount}, receive ${quote.receive_amount}`);
+```
+
+</Ts>
+</Code>
+
+The quote is the price the user accepts: `send_amount` is `receive_amount`
+plus the fees, and it holds until `expires_at`.
+
+## 3. Create the swap
+
+<Code>
+<Rust>
+
+```rust
+let swap = driver.swap_out(quote, Some(claim_address)).await?;
+println!("pay {}", swap.claim_invoice().await?);
+```
+
+</Rust>
+<Ts>
+
+```ts
+const swap = await driver.swapOut(quote, claimAddress);
+console.log(`pay ${await swap.claimInvoice()}`);
+```
+
+</Ts>
+</Code>
+
+The user pays the invoice. It is a hold invoice: the payment stays pending
+until the funds are locked on chain for the user.
+
+## 4. Run and watch
+
+<Code>
+<Rust>
+
+```rust
+let mut updates = driver.subscribe();
+tokio::spawn(driver.run());
+while let Some(swap) = updates.next().await {
+    match swap.error() {
+        Some(error) => eprintln!("{} error: {error}", swap.swap_id()),
+        None => println!("{} {:?}", swap.swap_id(), swap.status().await?),
+    }
+}
+```
+
+</Rust>
+<Ts>
+
+```ts
+const updates = driver.subscribe();
+driver.run();
+for await (const swap of updates) {
+  if (swap.error) console.error(`${swap.swapId} error: ${swap.error.message}`);
+  else console.log(swap.swapId, await swap.status());
+}
+```
+
+</Ts>
+</Code>
+
+The swap moves through `Funding`, `Confirming` and `Claiming` to
+`Completed`. [Swaps](swaps.mdx#statuses) has every status and what it means.
+
+## Runnable examples
+
+| Rust                                                                                            | TypeScript                                                                                  | Shows                                                                |
+| ----------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
+| [`swaps.rs`](https://github.com/Blockstream/anyswap/blob/main/crates/sdk/examples/swaps.rs)     | [`swaps.ts`](https://github.com/Blockstream/anyswap/blob/main/ts-sdk/examples/swaps.ts)     | any number of swaps, both ways, on both chains, in the background    |
+| [`advance.rs`](https://github.com/Blockstream/anyswap/blob/main/crates/sdk/examples/advance.rs) | [`advance.ts`](https://github.com/Blockstream/anyswap/blob/main/ts-sdk/examples/advance.ts) | one swap driven by hand over a file store, resumable after a restart |

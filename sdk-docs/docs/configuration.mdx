@@ -1,0 +1,62 @@
+---
+title: Configuration
+---
+
+# Configuration
+
+Every knob has a default. Driver-wide knobs go to
+<Id rust="with_config" ts="withConfig" />, and per-chain ones go with the
+chain to <Id rust="with_chain" ts="withChain" />:
+
+<Code>
+<Rust>
+
+```rust
+let driver = Driver::new(ctx, client, store)
+    .with_config(Config {
+        poll_interval: Duration::from_secs(5),
+        ..Config::default()
+    })
+    .with_chain(
+        Chain::Bitcoin,
+        esplora,
+        ChainConfig {
+            max_fee_rate: 50.0,
+            ..ChainConfig::bitcoin()
+        },
+    )?;
+```
+
+</Rust>
+<Ts>
+
+```ts
+const driver = new Driver(ctx, client, store)
+  .withConfig({ pollInterval: 5 })
+  .withChain(Chain.Bitcoin, esplora, { maxFeeRate: 50 });
+```
+
+</Ts>
+</Code>
+
+## Driver
+
+| Knob                                                  | Default     | Effect                                                                                                                          |
+| ----------------------------------------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| <Id rust="funding_timeout" ts="fundingTimeout" />     | 24 h        | From creation, the latest a swap with nothing on chain is canceled. The invoice's expiry or the server's cancel ends it sooner. |
+| <Id rust="poll_interval" ts="pollInterval" />         | 15 s        | The longest a swap goes unchecked without a server signal.                                                                      |
+| <Id rust="server_timeout" ts="serverTimeout" />       | 30 s        | How long a server call may go unanswered before it counts as an outage.                                                         |
+| <Id rust="fee_conf_target" ts="feeConfTarget" />      | 3 blocks    | The confirmation target of every fee estimate.                                                                                  |
+| <Id rust="fee_rate_cache_ttl" ts="feeRateCacheTtl" /> | 30 s        | How long a fee estimate is reused. Zero reads it every pass.                                                                    |
+| <Id rust="refund_timeout" ts="refundTimeout" />       | 1 h         | How long an ended SwapIn is still watched for late deposits.                                                                    |
+| <Id rust="max_htlc_hold" ts="maxHtlcHold" />          | 1008 blocks | The longest a SwapOut's hold invoice may hold the payment. A swap whose invoice holds longer is refused at creation.            |
+
+## Per chain
+
+| Knob                                           | Bitcoin | Liquid | Effect                                                                                                       |
+| ---------------------------------------------- | ------- | ------ | ------------------------------------------------------------------------------------------------------------ |
+| <Id rust="min_confs" ts="minConfs" />          | 3       | 2      | The depth a SwapOut's funds reach before the preimage goes out, and a spend reaches before it ends a swap.   |
+| <Id rust="claim_margin" ts="claimMargin" />    | 252     | 2520   | The CSV, in blocks, that must remain when a SwapOut's preimage goes out.                                     |
+| <Id rust="max_refund_csv" ts="maxRefundCsv" /> | 1008    | 10080  | The longest CSV accepted on a SwapIn deposit. A swap with a longer one is refused at creation.               |
+| <Id rust="max_fee_rate" ts="maxFeeRate" />     | 100     | 1      | The highest fee rate any spend pays, in sat/vB. A SwapOut holds its preimage while the estimate is above it. |
+| <Id rust="block_time" ts="blockTime" />        | 600 s   | 60 s   | The expected block interval, to compare a block deadline with a clock one.                                   |

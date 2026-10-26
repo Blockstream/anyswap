@@ -1,4 +1,4 @@
-//! Shared by the CLN plugin (server) and the SDK (client) on-chain primitives for AnySwap.
+//! On-chain primitives and API types for AnySwap, shared by the server and the SDK.
 
 pub mod api;
 pub mod codec;

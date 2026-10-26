@@ -630,17 +630,17 @@ mod tests {
     fn partition_drops_utxos_that_cannot_pay_their_own_fee() {
         let ctx = context();
         let swap = swap_in(&ctx, Chain::Bitcoin, canceled());
-        let opening_tx = bitcoin_tx(&bitcoin_script(&swap, &ctx), &[100_000, 500]);
+        let opening_tx = bitcoin_tx(&bitcoin_script(&swap, &ctx), &[100_000, 1_480]);
 
         let utxos = swap.outputs(&ctx, &opening_tx).unwrap();
         // A Bitcoin CSV refund is 138 vB, so at 10 sat/vB an input must be
-        // worth more than 1_380 sat to pay for itself.
+        // worth more than its 1_380 sat fee and a 546 sat output.
         let (economical, dust) = swap.partition_economical(&ctx, &utxos, 10.0).unwrap();
 
         assert_eq!(economical.len(), 1);
         assert_eq!(swap.value(&ctx, &economical[0]).unwrap(), 100_000);
         assert_eq!(dust.len(), 1);
-        assert_eq!(swap.value(&ctx, &dust[0]).unwrap(), 500);
+        assert_eq!(swap.value(&ctx, &dust[0]).unwrap(), 1_480);
     }
 
     #[test]

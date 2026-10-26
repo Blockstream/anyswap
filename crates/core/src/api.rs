@@ -1,4 +1,4 @@
-//! HTTP API request and response types shared between the server (plugin) and SDK (client).
+//! HTTP API request and response types shared between the server and the SDK.
 //!
 //! Amounts in sats are 64-bit and cross as decimal strings, so a reader whose
 //! numbers are doubles keeps every bit.
@@ -276,6 +276,14 @@ pub struct SwapState {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "openapi", schema(ignore))]
     pub server_refund_address: Option<String>,
+    /// The server's swap-in claim txid. Internal, as above.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "openapi", schema(ignore))]
+    pub source_claim_txid: Option<String>,
+    /// The server's swap-out refund txid. Internal, as above.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "openapi", schema(ignore))]
+    pub dest_refund_txid: Option<String>,
     /// Liquid: the user's blinding pubkey for the destination output.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dest_user_blinding_pubkey: Option<String>,
@@ -317,6 +325,8 @@ impl SwapState {
         self.refund_tx_fee = None;
         self.server_claim_address = None;
         self.server_refund_address = None;
+        self.source_claim_txid = None;
+        self.dest_refund_txid = None;
         self
     }
 
@@ -379,7 +389,7 @@ pub struct RevealPreimageRequest {
 
 /// The largest page `GET /v1/swap` serves. A history page reads tens of swaps
 /// at a time; the cap is what stops a client asking for the whole table in one
-/// response, and it bounds how much the plugin holds in memory to answer.
+/// response, and it bounds how much the server holds in memory to answer.
 pub const MAX_SWAP_LIST_LIMIT: u32 = 100;
 
 /// Machine-readable `code` carried beside `message` in every error response,
@@ -540,6 +550,8 @@ mod tests {
             user_refund_address: None,
             server_claim_address: Some("bc1qserver".into()),
             server_refund_address: Some("bc1qserver2".into()),
+            source_claim_txid: Some("00".repeat(32)),
+            dest_refund_txid: Some("11".repeat(32)),
             dest_user_blinding_pubkey: None,
             dest_service_blinding_pubkey: None,
             claim_invoice: None,
@@ -617,6 +629,8 @@ mod tests {
         assert!(json.get("refund_tx_fee").is_none());
         assert!(json.get("server_claim_address").is_none());
         assert!(json.get("server_refund_address").is_none());
+        assert!(json.get("source_claim_txid").is_none());
+        assert!(json.get("dest_refund_txid").is_none());
     }
 }
 

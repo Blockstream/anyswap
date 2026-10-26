@@ -13,7 +13,10 @@
 //! is a SwapIn invoice from your node; a `liquid:` prefix swaps on Liquid
 //! instead of Bitcoin, with the Liquid genesis and asset discovered from
 //! esplora and the server. Pay the deposits and hold invoices by hand, watch
-//! the statuses, Ctrl-C when done.
+//! the statuses, Ctrl-C when done. `ANYSWAP_SERVER_URL`,
+//! `ANYSWAP_BITCOIN_ESPLORA_URL` and, for Liquid swaps,
+//! `ANYSWAP_LIQUID_ESPLORA_URL` name the server and the Esplora APIs to run
+//! against.
 
 use std::{collections::HashMap, env};
 
@@ -47,10 +50,11 @@ impl Destinations for Addresses {
     }
 }
 
-const SERVER_URL: &str = "http://localhost:8083";
-const BITCOIN_ESPLORA_URL: &str = "http://localhost:8080/regtest/api";
-const LIQUID_ESPLORA_URL: &str = "http://localhost:8081/liquidregtest/api";
 const NETWORK: SwapNetwork = SwapNetwork::Regtest;
+
+fn env_var(name: &str) -> anyhow::Result<String> {
+    env::var(name).map_err(|_| anyhow::anyhow!("{name} is not set"))
+}
 
 fn address_chain(arg: &str) -> Option<Chain> {
     if arg
@@ -89,12 +93,13 @@ async fn main() -> anyhow::Result<()> {
 
     let (wallet, _mnemonic) = Wallet::generate(NETWORK)?;
     let identity = PrivateKey::new(wallet.identity_privkey()?, NETWORK.bitcoin_network());
-    let client = HttpClient::new(SERVER_URL, Some(identity));
-    let liquid_esplora = LiquidEsplora::new(LIQUID_ESPLORA_URL);
+    let client = HttpClient::new(&env_var("ANYSWAP_SERVER_URL")?, Some(identity));
 
     let mut ctx = SwapContext::new(wallet);
+    let mut liquid_esplora = None;
     if swaps.iter().any(|(chain, _)| *chain == Chain::Liquid) {
-        let genesis_hash = liquid_esplora.get_block_hash(0).await?;
+        let esplora = LiquidEsplora::new(&env_var("ANYSWAP_LIQUID_ESPLORA_URL")?);
+        let genesis_hash = esplora.get_block_hash(0).await?;
         let info = client.get_info().await?;
         // Taking the asset from the server is a regtest convenience only: a
         // wrong asset id passes every later check, so outside regtest pin the
@@ -106,17 +111,20 @@ async fn main() -> anyhow::Result<()> {
             .and_then(|policy| policy.asset.get(NATIVE_ASSET))
             .ok_or_else(|| anyhow::anyhow!("the server offers no Liquid asset"))?;
         ctx = ctx.with_liquid(&genesis_hash.to_string(), &policy_asset.asset_id)?;
+        liquid_esplora = Some(esplora);
     }
 
-    let driver = Driver::new(ctx, client.clone(), MemoryStore::default())
+    let mut driver = Driver::new(ctx, client.clone(), MemoryStore::default())
         .with_chain(
             Chain::Bitcoin,
-            BitcoinEsplora::new(BITCOIN_ESPLORA_URL)?,
+            BitcoinEsplora::new(&env_var("ANYSWAP_BITCOIN_ESPLORA_URL")?)?,
             ChainConfig::bitcoin(),
         )?
-        .with_chain(Chain::Liquid, liquid_esplora, ChainConfig::liquid())?
         .with_destinations(Addresses(addresses))
         .with_signals(client.signals());
+    if let Some(esplora) = liquid_esplora {
+        driver = driver.with_chain(Chain::Liquid, esplora, ChainConfig::liquid())?;
+    }
 
     for (chain, spec) in swaps {
         if let Ok(receive_amount) = spec.parse::<u64>() {

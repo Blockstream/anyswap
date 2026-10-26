@@ -1,0 +1,88 @@
+---
+title: Overview
+---
+
+# Overview
+
+AnySwap swaps between Lightning and on-chain Bitcoin or Liquid. The SDK, in
+Rust and in TypeScript, carries a driver that runs any number of swaps to
+their end, so an app creates swaps and shows their status.
+
+| Flow    | The user pays            | The user receives                    |
+| ------- | ------------------------ | ------------------------------------ |
+| SwapIn  | BTC or L-BTC on chain    | a Lightning payment to their invoice |
+| SwapOut | a Lightning hold invoice | BTC or L-BTC on chain                |
+
+## What the user risks
+
+The on-chain funds sit in a taproot output with three spending paths:
+
+| Path     | Spent by                | When                                        |
+| -------- | ----------------------- | ------------------------------------------- |
+| Preimage | the side paid on chain  | with the Lightning payment's preimage       |
+| Keypath  | either side             | once the other side has handed over its key |
+| CSV      | the side that funded it | alone, after the timeout                    |
+
+The server can delay a swap, but not redirect it. If it stops cooperating:
+
+| Swap                       | Outcome                                                                                      |
+| -------------------------- | -------------------------------------------------------------------------------------------- |
+| SwapIn                     | the deposit comes back by the CSV path                                                       |
+| SwapOut, before `Claiming` | the hold invoice fails back                                                                  |
+| SwapOut, `Claiming`        | the driver claims by the preimage path, and must be running to do it before the CSV runs out |
+
+A SwapOut enters `Claiming` only with at least
+<Id rust="claim_margin" ts="claimMargin" /> of its CSV left: 252 blocks, about
+42 hours, on Bitcoin by default.
+
+A status comes from the chain and from secrets the driver checked itself,
+never from the server's word. The server's own label is kept as
+`server_status`, for display.
+
+## Who does what
+
+| Job                                           | Done by                              |
+| --------------------------------------------- | ------------------------------------ |
+| Mint the invoice a SwapIn pays out to         | your app                             |
+| Pay the hold invoice of a SwapOut             | your app                             |
+| Give the claim and refund addresses           | your app, per swap or through a hook |
+| Keep the swap records                         | your app, behind the store interface |
+| Check the server's terms against your request | the driver                           |
+| Track each swap on chain                      | the driver                           |
+| Send the protocol messages                    | the driver                           |
+| Claim a SwapOut, refund a SwapIn              | the driver                           |
+
+## Install
+
+<Code>
+<Rust>
+
+```bash
+cargo add anyswap-sdk --features esplora
+```
+
+</Rust>
+<Ts>
+
+```bash
+npm install @blockstream/anyswap-sdk
+```
+
+</Ts>
+</Code>
+
+## Where to go next
+
+| To                                             | Read                                                                                                           |
+| ---------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| Run a first swap                               | [Quickstart](quickstart.mdx)                                                                                   |
+| Know every status and what to show             | [Swaps](swaps.mdx)                                                                                             |
+| Run the driver and handle its errors           | [Driving](driving.mdx)                                                                                         |
+| Get a SwapIn's funds back                      | [Refunds](refunds.mdx)                                                                                         |
+| Survive restarts and lost devices              | [Persistence and recovery](recovery.mdx)                                                                       |
+| Swap on Liquid                                 | [Liquid](liquid.mdx)                                                                                           |
+| Handle a refusal or a cancel                   | [Errors](errors.mdx)                                                                                           |
+| Tune timeouts, depths and fee caps             | [Configuration](configuration.mdx)                                                                             |
+| Run in a browser, or on your own chain backend | [Platforms](platforms.mdx)                                                                                     |
+| Move from a Boltz client                       | [Compared with Boltz](boltz.mdx)                                                                               |
+| Look up a type or method                       | [docs.rs](https://docs.rs/anyswap-sdk) for Rust, the [TypeScript reference](typescript/reference/Reference.md) |

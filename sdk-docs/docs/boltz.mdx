@@ -1,0 +1,59 @@
+---
+title: Compared with Boltz
+---
+
+# Compared with Boltz
+
+The nearest neighbours are the Rust clients of the Boltz exchange:
+[`boltz-client`](https://github.com/SatoshiPortal/boltz-rust) (boltz-rust, by
+Bull Bitcoin) and [`lwk_boltz`](https://github.com/Blockstream/lwk), part of
+Blockstream's Liquid Wallet Kit and built on `boltz-client`. The protocols are
+close: funds lock in a taproot script spendable by preimage, by a cooperative
+keypath, or by the funder after a timeout. A submarine swap is a SwapIn, and
+a reverse swap a SwapOut. This page is as of `boltz-client` 0.4.1 and LWK
+0.19.
+
+|                            | AnySwap SDK                                                  | `boltz-client`                    | `lwk_boltz`                                                   |
+| -------------------------- | ------------------------------------------------------------ | --------------------------------- | ------------------------------------------------------------- |
+| Languages                  | Rust, TypeScript                                             | Rust                              | Rust, and JavaScript through LWK's wasm bindings              |
+| In a browser               | the TypeScript SDK, or Rust on wasm32                        | builds for wasm32                 | through LWK's wasm bindings                                   |
+| Swap types                 | SwapIn, SwapOut                                              | submarine, reverse, chain         | submarine, reverse, chain                                     |
+| Runs a swap                | one driver for every stored swap                             | your code, step by step           | a state machine per swap, advanced by your code               |
+| Moves a swap forward       | the chain, read on every pass                                | your code                         | the server's WebSocket events                                 |
+| Keys                       | derived from the mnemonic and the `swap_id`                  | a keypair and preimage you create | derived from the session mnemonic and a key index you persist |
+| Recovery without the store | the server returns your own signed request, verified locally | none                              | the server returns the swaps of your session                  |
+
+All three check the counterparty's script before funds move. After that,
+an AnySwap status comes from the chain, so a missed or false server event
+cannot put a swap in a wrong state, and a client that was offline finds where
+it stands from the chain alone. A restored AnySwap swap is the request you
+signed, so a server can hide a swap but not alter one.
+
+`boltz-client` expects one output of exactly the swap amount at the swap
+address. The AnySwap driver refunds everything there worth its refund: a wrong
+amount, a second deposit, a late one.
+
+## The map
+
+| With Boltz                                       | With AnySwap                                                            |
+| ------------------------------------------------ | ----------------------------------------------------------------------- |
+| `BoltzApiClientV2`, `BoltzSession`               | <Id rust="HttpClient" ts="AnySwapClient" /> and `Driver`                |
+| Pair info and limits                             | `driver.quote`                                                          |
+| A keypair and preimage per swap                  | derived by the driver                                                   |
+| `next_index_to_use`, the key counter you persist | nothing                                                                 |
+| WebSocket status events                          | the driver's status; the server's label is `server_status`, for display |
+| `advance` loops per swap (`lwk_boltz`)           | one `run` for every stored swap                                         |
+| `BtcSwapTx`, `LBtcSwapTx` claims and refunds     | the driver claims and refunds                                           |
+| `DynStore`, an encrypted key-value store         | a store of three methods over JSON records                              |
+| `swap_restore`, the rescue file                  | <Id rust="restore_all" ts="restoreAll" />                               |
+
+## Migrating
+
+|             | Coming from Boltz                                                                                                                                                 |
+| ----------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Goes away   | generating keys and preimages, checking scripts, watching addresses, building claims and refunds, event handlers, the loop per swap and the restore wiring        |
+| You write   | the setup, a [store](recovery.mdx#the-store) over your database, and a [chain client](platforms.mdx#your-own-chain-client) if your chain data comes from Electrum |
+| Stays yours | the Lightning node and the addresses: mint the SwapIn invoice, pay the SwapOut hold invoice, give claim and refund addresses                                      |
+
+Map your UI to the [statuses](swaps.mdx#statuses), not to Boltz events. Like
+the Boltz clients, the SDK holds no funds: any wallet provides the addresses.

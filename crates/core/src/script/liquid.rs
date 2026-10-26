@@ -28,8 +28,8 @@ use crate::types::SwapNetwork;
 /// ephemeral key for each transaction and use it for blinding. Using the both-parties-known
 /// pub key and private key allows to unblind the transaction and spend it if we need.
 ///
-/// Plugin computes the common secret: k = s * R = r * S = r * s * G; K = k*G (that pubkey is used
-/// on the address) Elements generates: e <-$; E = e * G
+/// Each party computes the common secret: k = s * R = r * S = r * s * G; K = k*G (that pubkey is
+/// used on the address) Elements generates: e <-$; E = e * G
 /// Elements computes common secret: B = e * K = E * K
 /// Final tx nonce is E, that allows both sender and receiver computes common secret and unblind tx
 pub fn derive_liquid_blinding_key(

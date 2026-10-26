@@ -53,6 +53,7 @@ wasm-bindgen = { version = "0.2", optional = true }
 wasm-bindgen-futures = { version = "0.4", optional = true }
 
 [dev-dependencies]
+lightning-invoice = { workspace = true }
 tokio = { workspace = true }
 
 [[example]]
@@ -62,3 +63,7 @@ required-features = ["driver", "ws", "esplora"]
 [[example]]
 name = "advance"
 required-features = ["driver", "ws", "esplora"]
+
+[[test]]
+name = "driver"
+required-features = ["driver"]

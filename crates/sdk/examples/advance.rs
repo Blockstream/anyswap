@@ -15,6 +15,8 @@
 //! mnemonic and one JSON file per record live under `./anyswap-advance`, so
 //! `resume` continues a swap after a restart, and `list` shows every one on
 //! file. Bitcoin regtest; see `swaps.rs` for the Liquid setup.
+//! `ANYSWAP_SERVER_URL` and `ANYSWAP_BITCOIN_ESPLORA_URL` name the server and
+//! the Esplora API to run against.
 
 use std::{
     env, fs, io,
@@ -39,10 +41,12 @@ use async_trait::async_trait;
 use bip39::Mnemonic;
 use uuid::Uuid;
 
-const SERVER_URL: &str = "http://localhost:8083";
-const ESPLORA_URL: &str = "http://localhost:8080/regtest/api";
 const NETWORK: SwapNetwork = SwapNetwork::Regtest;
 const DIR: &str = "anyswap-advance";
+
+fn env_var(name: &str) -> anyhow::Result<String> {
+    env::var(name).map_err(|_| anyhow::anyhow!("{name} is not set"))
+}
 
 /// One JSON file per record, the record's serde form unchanged, written whole
 /// and renamed into place so a crash mid-write leaves the old record.
@@ -108,12 +112,12 @@ fn setup(dir: PathBuf) -> anyhow::Result<(Driver<Wallet>, Arc<FileStore>)> {
     fs::create_dir_all(&dir)?;
     let wallet = Wallet::from_mnemonic(&mnemonic(&dir)?, NETWORK)?;
     let identity = PrivateKey::new(wallet.identity_privkey()?, NETWORK.bitcoin_network());
-    let client = HttpClient::new(SERVER_URL, Some(identity));
+    let client = HttpClient::new(&env_var("ANYSWAP_SERVER_URL")?, Some(identity));
     let store = Arc::new(FileStore(dir));
     let driver = Driver::new(SwapContext::new(wallet), client.clone(), store.clone())
         .with_chain(
             Chain::Bitcoin,
-            BitcoinEsplora::new(ESPLORA_URL)?,
+            BitcoinEsplora::new(&env_var("ANYSWAP_BITCOIN_ESPLORA_URL")?)?,
             ChainConfig::bitcoin(),
         )?
         .with_signals(client.signals());

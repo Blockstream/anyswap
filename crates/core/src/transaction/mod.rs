@@ -20,7 +20,9 @@ pub(crate) use self::bitcoin::{
     bitcoin_tx_fee, decode_tx_hex, encode_tx_hex, parse_destination, sat_per_vb,
 };
 pub use self::{
-    bitcoin::{CLAIM_VSIZE, KEYPATH_VSIZE, OPENING_VSIZE, REFUND_VSIZE, extract_preimage},
+    bitcoin::{
+        CLAIM_VSIZE, KEYPATH_VSIZE, MAX_DUST, OPENING_VSIZE, REFUND_VSIZE, extract_preimage,
+    },
     context::{ChainCtx, LiquidChainCtx},
     liquid::{liquid_spend_input, validate_liquid_prevout},
 };

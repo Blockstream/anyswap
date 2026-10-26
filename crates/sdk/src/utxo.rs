@@ -36,7 +36,7 @@ pub enum UtxoError {
 }
 
 /// An output of a swap script, as an indexer reports it.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct SwapUtxo {
     pub txid: String,
     pub vout: u32,
@@ -45,7 +45,7 @@ pub struct SwapUtxo {
 
 /// What the chain shows of the output's value, which is where the two chains
 /// differ: Bitcoin states it, Liquid blinds it inside the output.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 enum Kind {
     Bitcoin(Amount),
     Liquid(Box<elements::TxOut>),
@@ -143,8 +143,9 @@ pub(crate) fn liquid_inputs(
 /// whose value cannot be read lands in the second set, since it cannot be
 /// weighed.
 ///
-/// Each output is weighed on its own against a whole single-input refund, and
-/// against the CSV path, which is the larger of the two refund paths. Both
+/// Each output is weighed on its own against a whole single-input refund on
+/// the CSV path, the larger of the two refund paths, and the largest dust
+/// floor of any refund address. Both
 /// choices are deliberately conservative: a batch shares the fixed part of that
 /// size between its inputs, so an output just under the line would in fact pay
 /// for itself alongside others. Show the second set to the user rather than
@@ -155,25 +156,28 @@ pub(crate) fn partition_economical(
     fee_rate: f64,
     liquid: Option<(SecretKey, AssetId)>,
 ) -> Result<(Vec<SwapUtxo>, Vec<SwapUtxo>), UtxoError> {
-    let fee = refund_fee(chain, fee_rate).ok_or(UtxoError::InvalidFeeRate(fee_rate))?;
+    let threshold = refund_threshold(chain, fee_rate).ok_or(UtxoError::InvalidFeeRate(fee_rate))?;
     let liquid = liquid.as_ref().map(|(key, asset)| (key, *asset));
     Ok(utxos
         .iter()
         .cloned()
-        .partition(|utxo| utxo.value(liquid).is_some_and(|value| value > fee)))
+        .partition(|utxo| utxo.value(liquid).is_some_and(|value| value > threshold)))
 }
 
-/// The fee of a single-input refund on the CSV path at `fee_rate`: what an
-/// output has to be worth to pay for its own refund. `None` for a rate that
-/// is not a fee rate.
-pub(crate) fn refund_fee(chain: Chain, fee_rate: f64) -> Option<u64> {
+/// The value an output has to exceed to pay for its own refund at
+/// `fee_rate`: the fee of a single-input refund on the CSV path, plus the
+/// smallest output the refund address takes. `None` for a rate that is not a
+/// fee rate.
+pub(crate) fn refund_threshold(chain: Chain, fee_rate: f64) -> Option<u64> {
     // Liquid transactions are an order of magnitude larger than Bitcoin ones,
     // because confidential outputs carry commitments and rangeproofs.
-    let vsize = match chain {
-        Chain::Bitcoin => transaction::REFUND_VSIZE,
-        Chain::Liquid => transaction::liquid::REFUND_VSIZE,
+    let (vsize, floor) = match chain {
+        // The address is not known yet, so the largest floor of any type.
+        Chain::Bitcoin => (transaction::REFUND_VSIZE, transaction::MAX_DUST),
+        // Liquid's builder checks no dust floor.
+        Chain::Liquid => (transaction::liquid::REFUND_VSIZE, 0),
     };
-    fee::fee_for_vsize(chain, vsize, fee_rate)
+    fee::fee_for_vsize(chain, vsize, fee_rate).and_then(|fee| fee.checked_add(floor))
 }
 
 #[cfg(test)]

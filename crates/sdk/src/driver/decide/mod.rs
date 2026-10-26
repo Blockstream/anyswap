@@ -18,7 +18,7 @@ use crate::{
 };
 
 /// Something that changes the world. Everything else a pass does is reading.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Action {
     Send(Message),
     Spend(Spend),
@@ -32,7 +32,7 @@ pub enum Message {
     Preimage,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Spend {
     /// Claim the SwapOut opening. `replaces` is a spend of it still in the
     /// mempool, ours or the server's refund; a broadcast refused then is not
@@ -45,7 +45,7 @@ pub enum Spend {
     },
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Path {
     Keypath { server_privkey: SecretKey },
     Preimage,

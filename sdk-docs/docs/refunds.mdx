@@ -1,0 +1,123 @@
+---
+title: Refunds
+---
+
+# Refunds
+
+Anything paid to a SwapIn's address, beyond the deposit the server was paid
+for, stays the user's. `swap.funds()` lists each such output and where its
+refund stands:
+
+| Listed                                                | When                        |
+| ----------------------------------------------------- | --------------------------- |
+| A stray: a wrong amount, a second deposit, a late one | always                      |
+| The deposit                                           | once the swap is `Canceled` |
+
+An output the server took by its own path is not listed.
+
+| Fund state   | Meaning                                                                                                                                                |
+| ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `Locked`     | Under the CSV until block `at`, or unconfirmed with no `at`.                                                                                           |
+| `Refundable` | Spendable now and worth its refund: the next refund takes it.                                                                                          |
+| `Dust`       | Not worth its refund at the last rate: the fee, plus 546 sat on Bitcoin for the smallest output any address takes. Refunded once fees fall far enough. |
+| `Refunding`  | In our refund `txid`, paying `fee`, unconfirmed.                                                                                                       |
+| `Refunded`   | In our refund `txid`, paying `fee`, confirmed.                                                                                                         |
+
+A refund's `fee` is the whole transaction's, so every fund it took shows the
+same one. Group by `txid` before adding fees up.
+
+## When a fund is refundable
+
+| Situation                                   | Refund                                                                       |
+| ------------------------------------------- | ---------------------------------------------------------------------------- |
+| The server canceled and handed over its key | at once, by the keypath                                                      |
+| The server is silent                        | by the CSV path, once the CSV matures                                        |
+| A stray lands after the swap is `Completed` | by the CSV path; until then the server holds both keys and can take it first |
+
+One refund takes at most 8 funds, the most valuable first. The rest stay
+`Refundable` and go in the next refund, once this one confirms. A refund pays
+the current fee estimate, capped at <Id rust="max_fee_rate" ts="maxFeeRate" />.
+
+## Where refunds go
+
+| The swap has                        | Refunds                                                                |
+| ----------------------------------- | ---------------------------------------------------------------------- |
+| A refund address, given at creation | go there by themselves                                                 |
+| None, and a destinations hook       | go where the hook says, by themselves                                  |
+| Neither                             | wait for <Id rust="swap.refund(&address)" ts="swap.refund(address)" /> |
+
+The hook gives the address of a SwapIn's refund, and of a SwapOut created
+without a claim address:
+
+<Code>
+<Rust>
+
+```rust
+#[async_trait]
+impl Destinations for MyWallet {
+    async fn claim_address(&self, chain: Chain) -> Result<String, String> {
+        self.next_address(chain).await.map_err(|e| e.to_string())
+    }
+    async fn refund_address(&self, chain: Chain) -> Result<String, String> {
+        self.next_address(chain).await.map_err(|e| e.to_string())
+    }
+}
+
+let driver = driver.with_destinations(my_wallet);
+```
+
+</Rust>
+<Ts>
+
+```ts
+driver.withDestinations({
+  claimAddress: (chain) => myWallet.nextAddress(chain),
+  refundAddress: (chain) => myWallet.nextAddress(chain),
+});
+```
+
+</Ts>
+</Code>
+
+An error from the hook fails the call that asked. A slow hook delays every
+swap, so bound any remote call in it with a timeout, and never wait on the
+user there.
+
+`refund` makes one pass that refunds every `Refundable` fund to the address,
+in any status. It returns the refund's txid, or
+<Id rust="None" ts="undefined" /> while nothing is refundable or an earlier
+refund is unconfirmed.
+
+## Late deposits
+
+`run` watches an ended SwapIn while its funds are still moving, and for
+<Id rust="refund_timeout" ts="refundTimeout" /> after it ends. A deposit sent
+later is found by `step`:
+
+<Code>
+<Rust>
+
+```rust
+if let Some(swap) = driver.get(swap_id).await? {
+    swap.step().await?;
+    let funds = swap.funds().await?;
+}
+```
+
+</Rust>
+<Ts>
+
+```ts
+const swap = await driver.get(swapId);
+if (swap) {
+  await swap.step();
+  const funds = await swap.funds();
+}
+```
+
+</Ts>
+</Code>
+
+The deposit shows in `funds`, and the status stays as it was. With somewhere
+to refund it, the swap is back in `run` until that refund confirms. `step`
+finds only what is already sent.

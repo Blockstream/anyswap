@@ -2,7 +2,7 @@
 //!
 //! [`Keyring`] is a small BIP32 building block: from a seed it derives a fixed
 //! set of hardened branches up front, then serves per-swap keys off them by
-//! `swap_id`. Both the SDK's user wallet and the plugin's node wallet are thin
+//! `swap_id`. Both the SDK's user wallet and the server's wallet are thin
 //! role-naming wrappers over one.
 //!
 //! Derived private keys are exposed in the clear by design: a cooperative

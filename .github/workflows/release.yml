@@ -1,0 +1,128 @@
+# Publishes a release from the snapshot and tag that export-github pushes: every
+# package whose version is not on its registry yet, through trusted publishing,
+# then the GitHub Release with the version's section of each SDK changelog. The
+# registries trust this workflow in the `release` environment.
+name: release
+
+on:
+  push:
+    tags:
+      - "[0-9]*.[0-9]*.[0-9]*"
+
+permissions: {}
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    environment: release
+    permissions:
+      contents: write
+      id-token: write
+    env:
+      VERSION: ${{ github.ref_name }}
+      WASM_PACK_VERSION: "0.15.0"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+
+      # Trusted publishing needs npm 11.5.1 or later.
+      - name: Tools
+        run: |
+          npm install -g "npm@^11.5.1"
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang lld llvm
+          rustup toolchain install
+          rustup target add wasm32-unknown-unknown
+
+      - name: Check the tag
+        run: |
+          workspace="$(grep -m1 '^version = ' Cargo.toml | cut -d '"' -f 2)"
+          [ "$workspace" = "$VERSION" ] || { echo "tag $VERSION, workspace version $workspace"; exit 1; }
+          case "$VERSION" in
+            *-*) pre="${VERSION#*-}"; echo "NPM_TAG=${pre%%.*}" >> "$GITHUB_ENV" ;;
+            *) echo "NPM_TAG=latest" >> "$GITHUB_ENV" ;;
+          esac
+
+      - name: Find unpublished crates
+        id: crates
+        run: |
+          for crate in core sdk; do
+            status="$(curl -s -o /dev/null -w '%{http_code}' \
+              -A "anyswap-release (https://github.com/${GITHUB_REPOSITORY})" \
+              "https://crates.io/api/v1/crates/anyswap-${crate}/${VERSION}")"
+            if [ "$status" = 200 ]; then
+              echo "anyswap-${crate} ${VERSION} is published"
+            else
+              echo "${crate}=true" >> "$GITHUB_OUTPUT"
+            fi
+          done
+
+      - uses: rust-lang/crates-io-auth-action@v1
+        id: crates-auth
+        if: steps.crates.outputs.core || steps.crates.outputs.sdk
+
+      # anyswap-sdk resolves anyswap-core from the registry, so core goes first.
+      - name: Publish anyswap-core
+        if: steps.crates.outputs.core
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.crates-auth.outputs.token }}
+        run: cargo publish -p anyswap-core --locked
+
+      - name: Publish anyswap-sdk
+        if: steps.crates.outputs.sdk
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.crates-auth.outputs.token }}
+        run: cargo publish -p anyswap-sdk --locked
+
+      - name: Build the bindings
+        run: |
+          cargo install wasm-pack --version "$WASM_PACK_VERSION" --locked
+          cd crates/sdk-wasm
+          CC_wasm32_unknown_unknown=clang wasm-pack build --target web --scope blockstream -- --locked
+
+      - name: Publish @blockstream/anyswap-wasm
+        working-directory: crates/sdk-wasm/pkg
+        run: |
+          if [ -n "$(npm view "@blockstream/anyswap-wasm@${VERSION}" version 2>/dev/null)" ]; then
+            echo "@blockstream/anyswap-wasm ${VERSION} is published"
+          else
+            npm publish --access public --tag "$NPM_TAG"
+          fi
+
+      # The repository installs the bindings from crates/sdk-wasm/pkg; the
+      # package depends on the published ones of this release.
+      - name: Publish @blockstream/anyswap-sdk
+        working-directory: ts-sdk
+        run: |
+          pkg_version="$(node -p "require('./package.json').version")"
+          if [ -n "$(npm view "@blockstream/anyswap-sdk@${pkg_version}" version 2>/dev/null)" ]; then
+            echo "@blockstream/anyswap-sdk ${pkg_version} is published"
+            exit 0
+          fi
+          grep -q "@blockstream/anyswap-wasm@${VERSION}/" src/wasm/loader-browser.ts \
+            || { echo "src/wasm/loader-browser.ts does not load anyswap-wasm ${VERSION}"; exit 1; }
+          npm ci
+          npm run build
+          npm pkg set "dependencies.@blockstream/anyswap-wasm=${VERSION}"
+          npm publish --access public --tag "$NPM_TAG" --ignore-scripts
+
+      - name: GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$VERSION" > /dev/null 2>&1; then
+            echo "release ${VERSION} exists"
+            exit 0
+          fi
+          scripts/release-notes.sh "$VERSION" \
+            "Rust: anyswap-sdk, anyswap-core|crates/sdk/CHANGELOG.md" \
+            "TypeScript: @blockstream/anyswap-sdk, @blockstream/anyswap-wasm|ts-sdk/CHANGELOG.md" \
+            > notes.md
+          grep -q '[^[:space:]]' notes.md || echo "No changes to the SDKs." > notes.md
+          prerelease=""
+          case "$VERSION" in *-*) prerelease="--prerelease" ;; esac
+          gh release create "$VERSION" --title "$VERSION" --notes-file notes.md $prerelease

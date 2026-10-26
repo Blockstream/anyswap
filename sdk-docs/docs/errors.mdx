@@ -1,0 +1,72 @@
+---
+title: Errors
+---
+
+# Errors
+
+A call fails with a `DriverError`. A swap the server gives up ends `Canceled`
+instead, with the server's reason.
+
+## Failed calls
+
+<Id rust="error.retryable()" ts="error.retryable" /> is true for an outage the
+next attempt may outlive: a chain or server that is unreachable, or a server
+answering 429 or 5xx. Anything else needs attention before acting again.
+
+A refusal from the server carries the server's code, in
+<Id rust="DriverError::Server(ClientError::Api { code, .. })" ts="error.code" />.
+Branch on the code, never on the HTTP status or the message.
+
+| Server code             | Status | Meaning                                                                            |
+| ----------------------- | ------ | ---------------------------------------------------------------------------------- |
+| `BadRequest`            | 400    | A field is missing or malformed. The message names it.                             |
+| `PolicyError`           | 400    | The request is outside the server's policy: chain, asset or amount. Quote again.   |
+| `Forbidden`             | 403    | The request signature is missing, stale or invalid.                                |
+| `SwapNotFound`          | 404    | No swap with this id.                                                              |
+| `SwapAlreadyExists`     | 409    | The swap id is taken.                                                              |
+| `TransitionRejected`    | 409    | The swap is past the message. The driver treats it as delivered.                   |
+| `InsufficientLiquidity` | 409    | SwapOut: the server cannot fund `receive_amount`. Retry later or lower the amount. |
+| `QuoteExpired`          | 410    | The quote is past `expires_at`. Quote again.                                       |
+| `PayloadTooLarge`       | 413    | The body is over the server's limit.                                               |
+| `TooManyConnections`    | 429    | Too many WebSocket subscriptions for this wallet.                                  |
+| `Internal`              | 500    | A fault on the server.                                                             |
+| `NotImplemented`        | 501    | A swap type the server does not serve.                                             |
+| `Unavailable`           | 503    | A backend the server needs is down. Retry later.                                   |
+
+The driver's own errors:
+
+| Error                                                       | Meaning                                                                                                             |
+| ----------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| <Id rust="Chain" ts="Chain" />                              | A chain read or broadcast failed. Retryable.                                                                        |
+| <Id rust="Server(ClientError::Transport)" ts="Transport" /> | The server did not answer within <Id rust="server_timeout" ts="serverTimeout" />. Retryable.                        |
+| <Id rust="Store" ts="Store" />                              | The store failed.                                                                                                   |
+| <Id rust="RecordVersion" ts="Store" />                      | A record of a version this SDK does not drive; see [records across releases](recovery.mdx#records-across-releases). |
+| <Id rust="Wallet" ts="Wallet" />                            | Key derivation failed, or the client has no identity key.                                                           |
+| <Id rust="Destination" ts="Destination" />                  | The destinations hook failed.                                                                                       |
+| <Id rust="Refused" ts="Refused" />                          | The server's copy of the swap does not match your request.                                                          |
+| <Id rust="Unsigned" ts="Unsigned" />                        | Restore: the server holds no signed request for the swap.                                                           |
+| <Id rust="BadSignature" ts="BadSignature" />                | Restore: the server's copy of the request does not verify against this wallet.                                      |
+| <Id rust="ChainNotConfigured" ts="ChainNotConfigured" />    | The swap is on a chain with no chain client.                                                                        |
+| <Id rust="InvalidChainConfig" ts="Invalid" />               | A per-chain knob is out of range.                                                                                   |
+| <Id rust="Unknown" ts="UnknownSwap" />                      | The swap is not in the store.                                                                                       |
+| <Id rust="QuoteExpired" ts="QuoteExpired" />                | The quote passed `expires_at` before the swap was created.                                                          |
+| <Id rust="WrongSwapType" ts="WrongSwapType" />              | A quote or call for the other flow.                                                                                 |
+| <Id rust="NotQuotable" ts="NotQuotable" />                  | The server offers no quote for these ends.                                                                          |
+| <Id rust="AmountOutOfRange" ts="AmountOutOfRange" />        | The amount is outside the server's limits.                                                                          |
+| <Id rust="Tx, Utxo, MissingField" ts="Internal" />          | A fault in the SDK.                                                                                                 |
+
+## Canceled swaps
+
+A swap the server gave up ends `Canceled` with the reason `ServerCanceled`.
+Its `error_type` says why, and `cancel_message` is the server's text, for
+display:
+
+| `error_type`         | Flow    | Meaning                                                    |
+| -------------------- | ------- | ---------------------------------------------------------- |
+| `UserCanceled`       | both    | A cancel the driver sent, on request or past `expires_at`. |
+| `Timeout`            | both    | A server deadline passed.                                  |
+| `TxValidationFailed` | SwapIn  | Two or more deposits paid the exact amount.                |
+| `PayInvoiceFailed`   | SwapIn  | Paying the invoice failed for good.                        |
+| `TxBroadcastFailed`  | SwapOut | The server never broadcast its output.                     |
+
+The other reasons a swap ends `Canceled` are in [Swaps](swaps.mdx#statuses).

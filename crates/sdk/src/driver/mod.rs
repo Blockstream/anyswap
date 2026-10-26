@@ -4,7 +4,7 @@
 //! it decides in `decide/`, what fixes a swap's terms in `accept.rs`, what
 //! survives a crash in `record.rs`, the knobs in `config.rs`, and what an
 //! integrator implements for the chain in `chain.rs` and for the server in
-//! `server.rs`. See `docs/proposals/driver.md`.
+//! `server.rs`.
 
 mod accept;
 mod chain;
@@ -515,8 +515,8 @@ impl<W: SwapWallet + MaybeSend + MaybeSync + 'static> Driver<W> {
             .fee_rate(config.fee_conf_target, config.fee_rate_cache_ttl)
             .await
         {
-            Ok(rate) => utxo::refund_fee(chain, rate.min(registered.config.max_fee_rate))
-                .is_some_and(|fee| largest > fee),
+            Ok(rate) => utxo::refund_threshold(chain, rate.min(registered.config.max_fee_rate))
+                .is_some_and(|threshold| largest > threshold),
             Err(_) => false,
         }
     }

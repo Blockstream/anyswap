@@ -1,0 +1,71 @@
+---
+title: Liquid
+---
+
+# Liquid
+
+The protocol, statuses and driver are the same as on Bitcoin. An integration
+differs in three places.
+
+## The context needs two values
+
+<Code>
+<Rust>
+
+```rust
+let genesis_hash = liquid_esplora.get_block_hash(0).await?;
+let ctx = SwapContext::new(wallet).with_liquid(&genesis_hash.to_string(), POLICY_ASSET)?;
+```
+
+</Rust>
+<Ts>
+
+```ts
+const ctx = new SwapContext(wallet, {
+  genesisHash: await liquidEsplora.getBlockHash(0),
+  policyAsset: POLICY_ASSET,
+});
+```
+
+</Ts>
+</Code>
+
+| Value                            | Source                                                                 |
+| -------------------------------- | ---------------------------------------------------------------------- |
+| Genesis hash                     | your own Esplora, or `elements-cli getblockhash 0`                     |
+| Policy asset, the L-BTC asset id | your network configuration; on regtest, `elements-cli dumpassetlabels` |
+
+Never take either from the swap server: a wrong value signs for another chain
+or builds transactions that never confirm. The driver refuses a swap whose
+asset differs from the context's.
+
+A context without these values serves Bitcoin swaps only.
+
+## The chain client is `LiquidEsplora`
+
+<Code>
+<Rust>
+
+```rust
+let driver = driver.with_chain(Chain::Liquid, liquid_esplora, ChainConfig::liquid())?;
+```
+
+</Rust>
+<Ts>
+
+```ts
+driver.withChain(Chain.Liquid, liquidEsplora);
+```
+
+</Ts>
+</Code>
+
+The Liquid defaults are one-minute blocks, 2 confirmations and a 1 sat/vB fee
+cap; see [Configuration](configuration.mdx). One driver can serve both chains.
+
+## Addresses are confidential
+
+Claim and refund addresses must be confidential. An unblinded claim address
+is refused when the swap is created, an unblinded refund address when the
+refund is built. A SwapIn's deposit address is confidential too, so only the
+user and the server see the amounts on it.

@@ -115,10 +115,10 @@ pub(super) fn funds(
         _ => strays,
     };
     let fee_rate = observed.fee_rate.min(chain_config.max_fee_rate);
-    let refund_fee = utxo::refund_fee(terms.chain, fee_rate);
+    let refund_threshold = utxo::refund_threshold(terms.chain, fee_rate);
     ours.into_iter()
         .filter_map(|output| {
-            let state = state(record, terms, observed, refund_fee, output)?;
+            let state = state(record, terms, observed, refund_threshold, output)?;
             Some(Fund {
                 outpoint: output.utxo.outpoint(),
                 amount: output.value,
@@ -134,7 +134,7 @@ fn state(
     record: &SwapRecord,
     terms: &Terms,
     observed: &Observed,
-    refund_fee: Option<u64>,
+    refund_threshold: Option<u64>,
     output: &Output,
 ) -> Option<FundState> {
     Some(match &output.spend {
@@ -150,7 +150,9 @@ fn state(
         None if record.locked(terms.csv, observed.confs(output.height)) => FundState::Locked {
             at: output.height.map(|height| height + terms.csv),
         },
-        None if refund_fee.is_none_or(|fee| output.value <= fee) => FundState::Dust,
+        None if refund_threshold.is_none_or(|threshold| output.value <= threshold) => {
+            FundState::Dust
+        }
         None => FundState::Refundable,
     })
 }

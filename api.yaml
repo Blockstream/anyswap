@@ -1,0 +1,908 @@
+openapi: 3.1.0
+info:
+  title: AnySwap
+  description: 'The AnySwap server API: swaps between Lightning and on-chain Bitcoin or Liquid'
+  license:
+    name: MIT
+    identifier: MIT
+  version: '1'
+paths:
+  /v1/info:
+    get:
+      tags:
+      - swaps
+      operationId: info
+      responses:
+        '200':
+          description: Server info and supported pairs
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InfoResponse'
+  /v1/swap:
+    get:
+      tags:
+      - swaps
+      operationId: list_swaps
+      parameters:
+      - name: user_id
+        in: query
+        required: true
+        schema:
+          type: string
+      - name: limit
+        in: query
+        description: Page size, at most 100. A larger one is rejected, not clamped.
+        required: true
+        schema:
+          type: integer
+          format: int32
+          maximum: 100
+          minimum: 0
+      - name: offset
+        in: query
+        required: true
+        schema:
+          type: integer
+          format: int32
+          minimum: 0
+      - name: is_active
+        in: query
+        description: '`true` keeps only active swaps, `false` only finished ones; omit for both.'
+        required: false
+        schema:
+          type: boolean
+      - name: swap_type
+        in: query
+        description: 'Keeps only swaps of this type: `SwapIn`, `SwapOut`, or `SwapChain`.'
+        required: false
+        schema:
+          type: string
+      - name: status
+        in: query
+        description: Comma-separated FSM statuses to keep, e.g. `Claimed,Refunded`.
+        required: false
+        schema:
+          type: string
+      - name: error_type
+        in: query
+        description: |-
+          Comma-separated cancellation reasons to keep, e.g. `UserCanceled,Timeout`.
+          Only a cancelled swap has one, so this filters out every other swap too.
+        required: false
+        schema:
+          type: string
+      - name: created_after
+        in: query
+        description: Keeps swaps created at or after this unix timestamp, in seconds.
+        required: false
+        schema:
+          type: integer
+          format: int64
+          minimum: 0
+      - name: created_before
+        in: query
+        description: Keeps swaps created at or before this unix timestamp, in seconds.
+        required: false
+        schema:
+          type: integer
+          format: int64
+          minimum: 0
+      - name: min_amount
+        in: query
+        description: Keeps swaps whose `receive_amount` is at least this many sats.
+        required: false
+        schema:
+          type: integer
+          format: int64
+          minimum: 0
+      - name: max_amount
+        in: query
+        description: Keeps swaps whose `receive_amount` is at most this many sats.
+        required: false
+        schema:
+          type: integer
+          format: int64
+          minimum: 0
+      - name: search
+        in: query
+        description: |-
+          Keeps swaps where `swap_id`, `payment_hash`, `claim_invoice`,
+          `source_txid`, `dest_txid`, or `user_claim_address` equals this value.
+          The match ignores case but is exact, not a prefix.
+        required: false
+        schema:
+          type: string
+      - name: with_create_request
+        in: query
+        description: |-
+          `true` carries each swap's `create_request_*` fields as
+          `GET /v1/swap/{id}` does; a page omits them otherwise.
+        required: false
+        schema:
+          type: boolean
+      responses:
+        '200':
+          description: Paginated swap history
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SwapListResponse'
+        '400':
+          description: Unknown value in a filter parameter, or a limit above the cap
+    post:
+      tags:
+      - swaps
+      operationId: create_swap
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateSwapRequest'
+        required: true
+      responses:
+        '200':
+          description: Swap created; read state via GET /v1/swap/{id}
+        '409':
+          description: swap_id is already in use by another swap
+  /v1/swap/{id}:
+    get:
+      tags:
+      - swaps
+      operationId: get_swap
+      parameters:
+      - name: id
+        in: path
+        description: Swap id
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: Current swap state
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SwapState'
+  /v1/swap/{id}/cancel:
+    post:
+      tags:
+      - swaps
+      operationId: cancel
+      parameters:
+      - name: id
+        in: path
+        description: Swap id
+        required: true
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CancelRequest'
+        required: true
+      responses:
+        '200':
+          description: Cancellation requested; observe outcome via GET /v1/swap/{id}
+  /v1/swap/{id}/reveal/claim:
+    post:
+      tags:
+      - swaps
+      operationId: reveal_claim
+      parameters:
+      - name: id
+        in: path
+        description: Swap id
+        required: true
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RevealClaimRequest'
+        required: true
+      responses:
+        '200':
+          description: Source refund key accepted
+  /v1/swap/{id}/reveal/preimage:
+    post:
+      tags:
+      - swaps
+      operationId: reveal_preimage
+      parameters:
+      - name: id
+        in: path
+        description: Swap id
+        required: true
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RevealPreimageRequest'
+        required: true
+      responses:
+        '200':
+          description: Preimage accepted
+components:
+  schemas:
+    AssetPolicyResponse:
+      type: object
+      required:
+      - asset_id
+      - min_amount
+      - max_amount
+      properties:
+        asset_id:
+          type: string
+        max_amount:
+          type: string
+        min_amount:
+          type: string
+    CancelRequest:
+      type: object
+      required:
+      - cancel_message
+      properties:
+        cancel_message:
+          type: string
+    Chain:
+      type: string
+      enum:
+      - bitcoin
+      - liquid
+    ChainPolicyResponse:
+      type: object
+      required:
+      - source_csv
+      - dest_csv
+      - confs
+      - block_time
+      - timeouts
+      - service_ppm
+      - min_base_fee_multiplier
+      - asset
+      properties:
+        asset:
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/AssetPolicyResponse'
+          propertyNames:
+            type: string
+        block_time:
+          type: integer
+          format: int32
+          minimum: 0
+        confs:
+          type: integer
+          format: int32
+          minimum: 0
+        dest_csv:
+          type: integer
+          format: int32
+          description: CSV timelock on a swap-out opening tx, in this chain's blocks.
+          minimum: 0
+        min_base_fee_multiplier:
+          type: integer
+          format: int64
+          description: |-
+            Dust-guard floor: minimum receive amount as a multiple of this chain's
+            base fee.
+          minimum: 0
+        service_ppm:
+          type: integer
+          format: int64
+          minimum: 0
+        source_csv:
+          type: integer
+          format: int32
+          description: CSV timelock on a swap-in opening tx, in this chain's blocks.
+          minimum: 0
+        timeouts:
+          $ref: '#/components/schemas/TimeoutResponse'
+    CreateSwapRequest:
+      type: object
+      required:
+      - protocol_version
+      - swap_id
+      - user_id
+      - receive_amount
+      - send_amount
+      properties:
+        claim_invoice:
+          type:
+          - string
+          - 'null'
+          description: swap-in only.
+        dest_asset_id:
+          type:
+          - string
+          - 'null'
+        dest_blinding_pubkey:
+          type:
+          - string
+          - 'null'
+          description: swap-out and swap-chain, Liquid only.
+        dest_chain:
+          oneOf:
+          - type: 'null'
+          - $ref: '#/components/schemas/Chain'
+        dest_claim_pubkey:
+          type:
+          - string
+          - 'null'
+          description: swap-out and swap-chain.
+        payment_hash:
+          type:
+          - string
+          - 'null'
+          description: 'swap-out and swap-chain: preimage hash for the destination HTLC.'
+        protocol_version:
+          type: string
+        quote_id:
+          type:
+          - string
+          - 'null'
+          format: uuid
+          description: Optional `GET /v1/info` quote locking the base fee.
+        receive_amount:
+          type: string
+        send_amount:
+          type: string
+        source_asset_id:
+          type:
+          - string
+          - 'null'
+        source_blinding_pubkey:
+          type:
+          - string
+          - 'null'
+          description: swap-in and swap-chain, Liquid only.
+        source_chain:
+          oneOf:
+          - type: 'null'
+          - $ref: '#/components/schemas/Chain'
+        source_refund_pubkey:
+          type:
+          - string
+          - 'null'
+          description: swap-in and swap-chain.
+        swap_id:
+          type: string
+          format: uuid
+        user_claim_address:
+          type:
+          - string
+          - 'null'
+          description: swap-out and swap-chain.
+        user_id:
+          type: string
+        user_refund_address:
+          type:
+          - string
+          - 'null'
+          description: swap-in and swap-chain.
+        webhook:
+          oneOf:
+          - type: 'null'
+          - $ref: '#/components/schemas/WebhookRequest'
+            description: Optional webhook for swap status changes.
+    ErrorCode:
+      type: string
+      description: |-
+        Machine-readable `code` carried beside `message` in every error response,
+        so a client never infers semantics from the HTTP status.
+      enum:
+      - Internal
+      - BadRequest
+      - NotImplemented
+      - QuoteExpired
+      - SwapNotFound
+      - SwapAlreadyExists
+      - TransitionRejected
+      - PolicyError
+      - TooManyConnections
+      - Unavailable
+      - Forbidden
+      - PayloadTooLarge
+      - InsufficientLiquidity
+    ErrorResponse:
+      type: object
+      description: The body of every `4xx`/`5xx` response.
+      required:
+      - message
+      - code
+      properties:
+        code:
+          $ref: '#/components/schemas/ErrorCode'
+        message:
+          type: string
+    FeeEstimate:
+      type: object
+      required:
+      - source
+      - dest
+      properties:
+        dest:
+          type: string
+        source:
+          type: string
+    InfoResponse:
+      type: object
+      required:
+      - online
+      - policy
+      - quote_ttl
+      properties:
+        fee_estimates:
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/FeeEstimate'
+          propertyNames:
+            type: string
+            enum:
+            - bitcoin
+            - liquid
+        online:
+          type: boolean
+          description: |-
+            Whether the Lightning node pays and receives; `false` while it runs in
+            offline mode.
+        policy:
+          $ref: '#/components/schemas/Policy'
+        quote_id:
+          type:
+          - string
+          - 'null'
+          format: uuid
+        quote_ttl:
+          type: integer
+          format: int64
+          description: Seconds a `quote_id` stays valid once issued.
+          minimum: 0
+        webhook:
+          $ref: '#/components/schemas/WebhookInfo'
+    LightningPolicyResponse:
+      type: object
+      required:
+      - min_amount
+      - max_amount
+      - service_ppm
+      properties:
+        max_amount:
+          type: string
+        min_amount:
+          type: string
+        service_ppm:
+          type: integer
+          format: int64
+          minimum: 0
+    Pagination:
+      type: object
+      required:
+      - total
+      - limit
+      - offset
+      - has_next
+      properties:
+        has_next:
+          type: boolean
+        limit:
+          type: integer
+          format: int32
+          minimum: 0
+        offset:
+          type: integer
+          format: int32
+          minimum: 0
+        total:
+          type: integer
+          format: int32
+          minimum: 0
+    Policy:
+      type: object
+      required:
+      - protocol_version
+      - network
+      - invoice_expiry
+      - chain
+      - lightning
+      properties:
+        chain:
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/ChainPolicyResponse'
+          propertyNames:
+            type: string
+            enum:
+            - bitcoin
+            - liquid
+        invoice_expiry:
+          type: integer
+          format: int64
+          minimum: 0
+        lightning:
+          $ref: '#/components/schemas/LightningPolicyResponse'
+        network:
+          $ref: '#/components/schemas/SwapNetwork'
+        protocol_version:
+          type: string
+    RevealClaimRequest:
+      type: object
+      required:
+      - source_refund_privkey
+      properties:
+        source_refund_privkey:
+          type: string
+    RevealPreimageRequest:
+      type: object
+      required:
+      - preimage
+      properties:
+        preimage:
+          type: string
+    SwapListQuery:
+      type: object
+      description: |-
+        Filters for `GET /v1/swap`. They intersect, and all of them apply before
+        `limit` and `offset`, so `Pagination::total` counts what they matched. A
+        filter sent with nothing in it means the same as one left out.
+      required:
+      - user_id
+      - limit
+      - offset
+      properties:
+        created_after:
+          type:
+          - integer
+          - 'null'
+          format: int64
+          description: Keeps swaps created at or after this unix timestamp, in seconds.
+          minimum: 0
+        created_before:
+          type:
+          - integer
+          - 'null'
+          format: int64
+          description: Keeps swaps created at or before this unix timestamp, in seconds.
+          minimum: 0
+        error_type:
+          type:
+          - string
+          - 'null'
+          description: |-
+            Comma-separated cancellation reasons to keep, e.g. `UserCanceled,Timeout`.
+            Only a cancelled swap has one, so this filters out every other swap too.
+        is_active:
+          type:
+          - boolean
+          - 'null'
+          description: '`true` keeps only active swaps, `false` only finished ones; omit for both.'
+        limit:
+          type: integer
+          format: int32
+          description: Page size, at most 100. A larger one is rejected, not clamped.
+          maximum: 100
+          minimum: 0
+        max_amount:
+          type:
+          - integer
+          - 'null'
+          format: int64
+          description: Keeps swaps whose `receive_amount` is at most this many sats.
+          minimum: 0
+        min_amount:
+          type:
+          - integer
+          - 'null'
+          format: int64
+          description: Keeps swaps whose `receive_amount` is at least this many sats.
+          minimum: 0
+        offset:
+          type: integer
+          format: int32
+          minimum: 0
+        search:
+          type:
+          - string
+          - 'null'
+          description: |-
+            Keeps swaps where `swap_id`, `payment_hash`, `claim_invoice`,
+            `source_txid`, `dest_txid`, or `user_claim_address` equals this value.
+            The match ignores case but is exact, not a prefix.
+        status:
+          type:
+          - string
+          - 'null'
+          description: Comma-separated FSM statuses to keep, e.g. `Claimed,Refunded`.
+        swap_type:
+          type:
+          - string
+          - 'null'
+          description: 'Keeps only swaps of this type: `SwapIn`, `SwapOut`, or `SwapChain`.'
+        user_id:
+          type: string
+        with_create_request:
+          type: boolean
+          description: |-
+            `true` carries each swap's `create_request_*` fields as
+            `GET /v1/swap/{id}` does; a page omits them otherwise.
+    SwapListResponse:
+      type: object
+      required:
+      - swaps
+      - pagination
+      properties:
+        pagination:
+          $ref: '#/components/schemas/Pagination'
+        swaps:
+          type: array
+          items:
+            $ref: '#/components/schemas/SwapState'
+    SwapNetwork:
+      type: string
+      description: On-chain network for swap operations.
+      enum:
+      - mainnet
+      - testnet
+      - signet
+      - regtest
+    SwapState:
+      type: object
+      required:
+      - protocol_version
+      - swap_id
+      - swap_type
+      - status
+      - receive_amount
+      - send_amount
+      - base_fee
+      - service_fee
+      - payment_hash
+      - transitioned_at
+      - created_at
+      properties:
+        base_fee:
+          type: string
+        cancel_message:
+          type:
+          - string
+          - 'null'
+        claim_invoice:
+          type:
+          - string
+          - 'null'
+        create_request_body:
+          type:
+          - string
+          - 'null'
+          description: |-
+            The `POST /v1/swap` body this swap was created from, verbatim. With the
+            two fields below it lets a client verify the swap's terms against its own
+            signature rather than against this response. Returned by
+            `GET /v1/swap/{id}`, and by the listing under `with_create_request`.
+        create_request_signature:
+          type:
+          - string
+          - 'null'
+          description: Hex of the 64-byte Schnorr signature over that request.
+        create_request_timestamp:
+          type:
+          - integer
+          - 'null'
+          format: int64
+        created_at:
+          type: integer
+          format: int64
+          minimum: 0
+        dest_asset:
+          type:
+          - string
+          - 'null'
+        dest_chain:
+          oneOf:
+          - type: 'null'
+          - $ref: '#/components/schemas/Chain'
+        dest_claim_pubkey:
+          type:
+          - string
+          - 'null'
+        dest_csv:
+          type:
+          - integer
+          - 'null'
+          format: int32
+          minimum: 0
+        dest_refund_privkey:
+          type:
+          - string
+          - 'null'
+        dest_refund_pubkey:
+          type:
+          - string
+          - 'null'
+        dest_service_blinding_pubkey:
+          type:
+          - string
+          - 'null'
+          description: 'Liquid: anyswap''s blinding pubkey for the destination output.'
+        dest_txid:
+          type:
+          - string
+          - 'null'
+        dest_user_blinding_pubkey:
+          type:
+          - string
+          - 'null'
+          description: 'Liquid: the user''s blinding pubkey for the destination output.'
+        dest_vout:
+          type:
+          - integer
+          - 'null'
+          format: int32
+          minimum: 0
+        error_type:
+          type:
+          - string
+          - 'null'
+        payment_hash:
+          type: string
+        preimage:
+          type:
+          - string
+          - 'null'
+        protocol_version:
+          type: string
+        receive_amount:
+          type: string
+        send_amount:
+          type: string
+        service_fee:
+          type: string
+        source_asset:
+          type:
+          - string
+          - 'null'
+        source_chain:
+          oneOf:
+          - type: 'null'
+          - $ref: '#/components/schemas/Chain'
+        source_claim_privkey:
+          type:
+          - string
+          - 'null'
+        source_claim_pubkey:
+          type:
+          - string
+          - 'null'
+        source_csv:
+          type:
+          - integer
+          - 'null'
+          format: int32
+          minimum: 0
+        source_refund_pubkey:
+          type:
+          - string
+          - 'null'
+        source_service_blinding_pubkey:
+          type:
+          - string
+          - 'null'
+          description: 'Liquid: anyswap''s blinding pubkey for the source output.'
+        source_txid:
+          type:
+          - string
+          - 'null'
+        source_user_blinding_pubkey:
+          type:
+          - string
+          - 'null'
+          description: 'Liquid: the user''s blinding pubkey for the source output.'
+        source_vout:
+          type:
+          - integer
+          - 'null'
+          format: int32
+          minimum: 0
+        status:
+          type: string
+        swap_id:
+          type: string
+          format: uuid
+        swap_type:
+          $ref: '#/components/schemas/SwapType'
+        transitioned_at:
+          type: integer
+          format: int64
+          minimum: 0
+        user_claim_address:
+          type:
+          - string
+          - 'null'
+        user_refund_address:
+          type:
+          - string
+          - 'null'
+    SwapStateUpdate:
+      type: object
+      required:
+      - swap_id
+      - status
+      properties:
+        status:
+          type: string
+        swap_id:
+          type: string
+          format: uuid
+    SwapType:
+      type: string
+      description: |-
+        Swap kind. Directions are relative to Lightning: `SwapIn` is on-chain to
+        Lightning, `SwapOut` is Lightning to on-chain, `SwapChain` is on-chain to
+        on-chain across two different chains.
+      enum:
+      - SwapIn
+      - SwapOut
+      - SwapChain
+    TimeoutResponse:
+      type: object
+      description: |-
+        Deadlines this chain enforces as a SwapIn source, in seconds. A swap left in
+        the matching status past its deadline is canceled. SwapOut has no deadline
+        here: once its opening tx confirms, the bound is the `dest_csv` timelock
+        in blocks.
+      required:
+      - await_opening_tx
+      - await_claim_key_reveal_message
+      properties:
+        await_claim_key_reveal_message:
+          type: integer
+          format: int64
+          description: Deadline to reveal the cooperative claim key.
+          minimum: 0
+        await_opening_tx:
+          type: integer
+          format: int64
+          description: |-
+            Maximum wait for the opening tx to appear at the swap address and
+            confirm. The claim invoice expiry may end it sooner.
+          minimum: 0
+    WebhookInfo:
+      type: object
+      required:
+      - enabled
+      - https_required
+      properties:
+        enabled:
+          type: boolean
+          description: Whether this node accepts webhook registrations.
+        https_required:
+          type: boolean
+          description: Whether a registered url must use https.
+    WebhookRequest:
+      type: object
+      description: Status webhook registration supplied with a swap.
+      required:
+      - url
+      properties:
+        hash_swap_id:
+          type: boolean
+          description: Send SHA256 of the swap id instead of the id itself.
+        statuses:
+          type:
+          - array
+          - 'null'
+          items:
+            type: string
+          description: Statuses to deliver. Omitted or empty delivers every status change.
+        url:
+          type: string
+      additionalProperties: false

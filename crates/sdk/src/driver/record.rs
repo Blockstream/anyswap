@@ -338,10 +338,11 @@ pub struct Fund {
 pub enum FundState {
     /// Under the CSV until `at`, or unconfirmed.
     Locked { at: Option<Height> },
-    /// Spendable now and worth its fee: the next refund takes it.
+    /// Spendable now and worth its refund: the next refund takes it.
     Refundable,
-    /// Spendable, but worth less than its fee at the last rate. `run` takes
-    /// the swap up again once the rate makes it worth its fee.
+    /// Spendable, but not worth its fee and the smallest output a refund
+    /// address takes at the last rate. `run` takes the swap up again once
+    /// the rate makes it worth its refund.
     Dust,
     /// In our refund `txid`, not yet in a block. `fee` is the whole
     /// transaction's, shared by every fund it took.

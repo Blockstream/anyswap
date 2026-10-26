@@ -1,0 +1,119 @@
+---
+title: Persistence and recovery
+---
+
+# Persistence and recovery
+
+## The store
+
+The driver keeps one record per swap, through a store you implement:
+
+<Code>
+<Rust>
+
+```rust
+#[async_trait]
+pub trait SwapStore: MaybeSend + MaybeSync {
+    async fn save(&self, record: &SwapRecord) -> Result<(), StoreError>;
+    async fn load(&self, swap_id: &Uuid) -> Result<Option<SwapRecord>, StoreError>;
+    async fn list(&self) -> Result<Vec<Uuid>, StoreError>;
+}
+```
+
+</Rust>
+<Ts>
+
+```ts
+interface SwapStore {
+  save(record: SwapRecord): Promise<void>;
+  load(swapId: string): Promise<SwapRecord | undefined>;
+  list(): Promise<string[]>;
+}
+```
+
+</Ts>
+</Code>
+
+Back it with anything durable: a table of JSON blobs keyed by `swap_id` is
+enough. Keep each record in its JSON form, `version` included, since a later
+SDK upgrades records only in that form. `list` returns ids, not records, so a
+record that fails to load stops only its own swap. Give each store one
+driver; in a browser, tabs over one store take turns on each swap.
+
+A record holds the swap's terms, its status, and what the chain cannot
+report. It holds no keys, so encrypting it is your choice, not a requirement.
+
+A restart is the same driver over the same store, and `run` again. Every swap
+resumes where the chain says it stands.
+
+## Losing the store
+
+The server keeps the signed request that created each swap, so a lost record
+can be rebuilt:
+
+<Code>
+<Rust>
+
+```rust
+let swap = driver.restore(swap_id).await?;
+let report = driver.restore_all().await?;
+```
+
+</Rust>
+<Ts>
+
+```ts
+const swap = await driver.restore(swapId);
+const { restored, failed } = await driver.restoreAll();
+```
+
+</Ts>
+</Code>
+
+| Call                                      | Effect                                                                                                                                                |
+| ----------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `restore`                                 | Rebuilds one swap after checking the request against this wallet and running the creation checks again. The swap is `Restoring` until its first pass. |
+| <Id rust="restore_all" ts="restoreAll" /> | Restores every swap the server lists for this wallet that the store lacks, and reports the ones restored and the ones that failed a check.            |
+
+A server can leave a swap out of its listing, but cannot alter one. Treat
+restore as the fallback for a lost device, and the store as the plan.
+
+## What the mnemonic recovers
+
+| Derived from the mnemonic         | Use                                                                       |
+| --------------------------------- | ------------------------------------------------------------------------- |
+| <Id rust="user_id" ts="userId" /> | the identity the server knows the wallet by                               |
+| Per swap, from its `swap_id`      | the refund and claim keys, the Liquid blinding keys, the SwapOut preimage |
+
+A swap key revealed by the protocol exposes no other key, and a mnemonic that
+also backs an ordinary BIP32 wallet shares no key with it.
+
+| Kept                       | Recovers                              |
+| -------------------------- | ------------------------------------- |
+| The mnemonic               | every swap the server still lists     |
+| The mnemonic and the store | every swap, also with the server gone |
+
+To recover a wallet:
+
+1. Build the wallet from the mnemonic, and the driver over the store, loaded
+   from a backup if there is one.
+2. Call <Id rust="restore_all" ts="restoreAll" />, then `run`.
+
+## Records across releases
+
+An SDK drives a record only when both its `version` and its key derivation
+match:
+
+| Written by          | `version` | Keys derived from                        | Driven by SDK 1.3.0 and later |
+| ------------------- | --------- | ---------------------------------------- | ----------------------------- |
+| SDK 1.2.0           | 1         | the seed, as BIP84 account keys          | no                            |
+| SDK 1.3.0 and later | 1         | the seed tagged `anyswap/user-wallet/v2` | yes                           |
+
+A 1.2.0 record still loads, but the driver watches an address nothing was
+paid to. Finish such swaps with the SDK that made them.
+
+Within one `version`, a field a later SDK added reads as
+<Id rust="None" ts="null" /> until a pass fills it, as `fee` on a swap
+finished before 1.4.0; `step` makes that pass. A record of another `version`
+fails with <Id rust="RecordVersion" ts="Store" />, and an older SDK may not
+read a record a newer one wrote.

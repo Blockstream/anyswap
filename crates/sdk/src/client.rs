@@ -328,7 +328,7 @@ impl HttpClient {
         Ok(())
     }
 
-    // Builds the exact auth payload the plugin middleware verifies.
+    // Builds the exact auth payload the server verifies.
     fn prepare_headers(
         &self,
         swap_id: &str,
