@@ -29,15 +29,15 @@ const quote = await driver.quote({ chain: Chain.Bitcoin }, "lightning", target);
 </Ts>
 </Code>
 
-| Field              | Meaning                                                                                     |
-| ------------------ | ------------------------------------------------------------------------------------------- |
-| `receive_amount`   | what the user receives                                                                      |
-| `send_amount`      | what the user pays: `receive_amount` plus `fee`                                             |
-| `fee`              | `base_fee` plus `service_fee`                                                               |
-| `base_fee`         | the server's on-chain costs at the current fee rate                                         |
-| `service_fee`      | the proportional fee, plus any rounding                                                     |
-| `expires_at`       | the last moment a swap can be created from it; after it, creating fails with `QuoteExpired` |
-| `await_opening_tx` | SwapIn: how long the server waits for the deposit, in seconds                               |
+| Field              | Meaning                                                                                                                |
+| ------------------ | ---------------------------------------------------------------------------------------------------------------------- |
+| `receive_amount`   | what the user receives                                                                                                 |
+| `send_amount`      | what the user pays: `receive_amount` plus `fee`                                                                        |
+| `fee`              | `base_fee` plus `service_fee`                                                                                          |
+| `base_fee`         | the server's on-chain costs at the current fee rate                                                                    |
+| `service_fee`      | the proportional fee, plus any rounding                                                                                |
+| `expires_at`       | the last moment a swap can be created from it; after it, creating fails with [`QuoteExpired`](errors.mdx#failed-calls) |
+| `await_opening_tx` | SwapIn: how long the server waits for the deposit, in seconds                                                          |
 
 Show the quote, and create the swap when the user accepts. The swap carries
 both amounts as quoted. A SwapOut's claim pays its own network fee out of
@@ -115,8 +115,9 @@ lets the payment settle, and claims the funds to the claim address.
 | the funds have fewer than <Id rust="min_confs" ts="minConfs" /> confirmations | `Confirming`, with `confs` of `needed`              |
 | the fee estimate is above <Id rust="max_fee_rate" ts="maxFeeRate" />          | `Confirming`, with the estimate as `fee_rate_spike` |
 
-Once less than <Id rust="claim_margin" ts="claimMargin" /> of the CSV is left,
-the preimage never goes out: the swap ends `Canceled` with
+Once less than
+[<Id rust="claim_margin" ts="claimMargin" />](configuration.mdx#per-chain) of
+the CSV is left, the preimage never goes out: the swap ends `Canceled` with
 `ClaimWindowClosed`, and the payment fails back.
 
 A SwapOut ends `Completed` once the claim confirms, or `Canceled` with the
@@ -145,12 +146,12 @@ whose payout is the server's.
 
 A `Canceled` swap says why in `reason`:
 
-| Reason              | Flow    | Meaning                                                                                                                                             |
-| ------------------- | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `ServerCanceled`    | both    | The server gave the swap up, with its `error_type` and `cancel_message`. `UserCanceled` is any cancel the driver sent; `cancel_message` says whose. |
-| `CsvMatured`        | SwapIn  | The deposit's CSV matured with no word from the server.                                                                                             |
-| `ServerRefunded`    | SwapOut | The server's CSV refund took the funds.                                                                                                             |
-| `ClaimWindowClosed` | SwapOut | The CSV ran short before the preimage went out. The payment fails back once the server's CSV refund confirms, from block `at` at the earliest.      |
+| Reason              | Flow    | Meaning                                                                                                                                                                                                       |
+| ------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ServerCanceled`    | both    | The server gave the swap up, with its [`error_type`](errors.mdx#canceled-swaps) and `cancel_message`. [`UserCanceled`](errors.mdx#canceled-swaps) is any cancel the driver sent; `cancel_message` says whose. |
+| `CsvMatured`        | SwapIn  | The deposit's CSV matured with no word from the server.                                                                                                                                                       |
+| `ServerRefunded`    | SwapOut | The server's CSV refund took the funds.                                                                                                                                                                       |
+| `ClaimWindowClosed` | SwapOut | The CSV ran short before the preimage went out. The payment fails back once the server's CSV refund confirms, from block `at` at the earliest.                                                                |
 
 `Completed` and `Canceled` are terminal: the deal is settled. A SwapIn's
 [`funds`](refunds.mdx) can still move after it.

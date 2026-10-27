@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.8.0]
+
+- **Breaking:** `HttpClient::new` takes the `Wallet` that signs protected
+  requests instead of its identity `PrivateKey`, and returns a `Result`.
+  `set_private_key` is gone.
+
+### Minor
+
+- `Wallet` erases its master key and seeds once its keys are derived, and its
+  keys when it drops. A `Mnemonic` erases its words when it drops.
+
 ## [1.7.0]
 
 - A SwapIn fund is `Dust` unless it is worth its refund fee plus 546 sat on

@@ -1,6 +1,6 @@
 {
   "name": "@blockstream/anyswap-sdk",
-  "version": "1.7.0",
+  "version": "1.8.0",
   "description": "AnySwap TypeScript SDK",
   "homepage": "https://blockstream.github.io/anyswap/",
   "repository": {
@@ -65,14 +65,20 @@
     "@types/node": "^22.0.0",
     "prettier": "^3.8.1",
     "swagger-typescript-api": "^13.6.10",
-    "tsup": "^8.0.0",
+    "tsup": "^9.0.0",
     "tsx": "^4.21.0",
     "typedoc": "^0.28.19",
     "typedoc-plugin-markdown": "^4.11.0",
     "typescript": "^5.7.0",
-    "vitest": "^3.0.0"
+    "vitest": "^5.0.5"
   },
   "engines": {
     "node": ">=22.0.0"
+  },
+  "devEngines": {
+    "runtime": {
+      "name": "node",
+      "version": ">=24.11.0"
+    }
   }
 }

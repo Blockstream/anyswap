@@ -13,7 +13,7 @@ npm install @blockstream/anyswap-sdk
 ## Build from source
 
 The SDK runs on the wasm bindings in `crates/sdk-wasm`, so they are built
-first. This needs Node.js `22+`, Rust with the `wasm32-unknown-unknown`
+first. This needs Node.js `24+`, Rust with the `wasm32-unknown-unknown`
 target, `wasm-pack` and clang. From the repository root:
 
 ```bash

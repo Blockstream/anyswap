@@ -35,17 +35,17 @@ amount, a second deposit, a late one.
 
 ## The map
 
-| With Boltz                                       | With AnySwap                                                            |
-| ------------------------------------------------ | ----------------------------------------------------------------------- |
-| `BoltzApiClientV2`, `BoltzSession`               | <Id rust="HttpClient" ts="AnySwapClient" /> and `Driver`                |
-| Pair info and limits                             | `driver.quote`                                                          |
-| A keypair and preimage per swap                  | derived by the driver                                                   |
-| `next_index_to_use`, the key counter you persist | nothing                                                                 |
-| WebSocket status events                          | the driver's status; the server's label is `server_status`, for display |
-| `advance` loops per swap (`lwk_boltz`)           | one `run` for every stored swap                                         |
-| `BtcSwapTx`, `LBtcSwapTx` claims and refunds     | the driver claims and refunds                                           |
-| `DynStore`, an encrypted key-value store         | a store of three methods over JSON records                              |
-| `swap_restore`, the rescue file                  | <Id rust="restore_all" ts="restoreAll" />                               |
+| With Boltz                                       | With AnySwap                                                                         |
+| ------------------------------------------------ | ------------------------------------------------------------------------------------ |
+| `BoltzApiClientV2`, `BoltzSession`               | <Id rust="HttpClient" ts="AnySwapClient" /> and `Driver`                             |
+| Pair info and limits                             | `driver.quote`                                                                       |
+| A keypair and preimage per swap                  | derived by the driver                                                                |
+| `next_index_to_use`, the key counter you persist | nothing                                                                              |
+| WebSocket status events                          | the driver's status; the server's label is `server_status`, for display              |
+| `advance` loops per swap (`lwk_boltz`)           | one `run` for every stored swap                                                      |
+| `BtcSwapTx`, `LBtcSwapTx` claims and refunds     | the driver claims and refunds                                                        |
+| `DynStore`, an encrypted key-value store         | a store of three methods over JSON records                                           |
+| `swap_restore`, the rescue file                  | [<Id rust="restore_all" ts="restoreAll" />](recovery.mdx#what-the-mnemonic-recovers) |
 
 ## Migrating
 

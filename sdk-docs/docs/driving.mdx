@@ -46,9 +46,9 @@ for await (const swap of updates) {
 
 An update is a prompt to render, not a ledger: under sustained lag the stream
 drops updates rather than slow the driver. A handle keeps no copy of the
-swap, so `status`, `record` and `funds` always return the store's latest, and
-<Id rust="driver.get(swap_id)" ts="driver.get(swapId)" /> returns any stored
-swap.
+swap, so `status`, `record` and [`funds`](refunds.mdx) always return the
+store's latest, and <Id rust="driver.get(swap_id)" ts="driver.get(swapId)" />
+returns any stored swap.
 
 ## By hand
 
@@ -109,7 +109,7 @@ The driver does not report whether the server is reachable.
 
 :::note[TypeScript]
 
-`client.signals(userId, { onConnectionChange })` reports when the server's
-WebSocket drops and when it is back, for a reconnecting hint.
+`client.signals({ onConnectionChange })` reports when the server's WebSocket
+drops and when it is back, for a reconnecting hint.
 
 :::

@@ -75,9 +75,7 @@ async function main() {
   const info = await new AnySwapClient(serverUrl).getInfo();
   // In production, restore from a stored mnemonic instead of generating one.
   const wallet = Wallet.fromMnemonic(generateMnemonic(24), info.policy.network);
-  const client = new AnySwapClient(serverUrl, {
-    auth: { identityPrivkey: wallet.identityPrivkey },
-  });
+  const client = new AnySwapClient(serverUrl, { wallet });
   const onLiquid = swaps.some(({ chain }) => chain === Chain.Liquid);
   const liquidEsplora = onLiquid
     ? new LiquidEsplora(env("ANYSWAP_LIQUID_ESPLORA_URL"))
@@ -101,7 +99,7 @@ async function main() {
       new BitcoinEsplora(env("ANYSWAP_BITCOIN_ESPLORA_URL")),
     )
     .withDestinations(destinations)
-    .withSignals(client.signals(wallet.userId));
+    .withSignals(client.signals());
   if (liquidEsplora) driver.withChain(Chain.Liquid, liquidEsplora);
 
   for (const { chain, value } of swaps) {

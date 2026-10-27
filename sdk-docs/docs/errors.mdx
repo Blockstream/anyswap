@@ -4,8 +4,8 @@ title: Errors
 
 # Errors
 
-A call fails with a `DriverError`. A swap the server gives up ends `Canceled`
-instead, with the server's reason.
+A call fails with a `DriverError`. A swap the server gives up ends
+[`Canceled`](swaps.mdx#statuses) instead, with the server's reason.
 
 ## Failed calls
 
@@ -35,29 +35,30 @@ Branch on the code, never on the HTTP status or the message.
 
 The driver's own errors:
 
-| Error                                                       | Meaning                                                                                                             |
-| ----------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
-| <Id rust="Chain" ts="Chain" />                              | A chain read or broadcast failed. Retryable.                                                                        |
-| <Id rust="Server(ClientError::Transport)" ts="Transport" /> | The server did not answer within <Id rust="server_timeout" ts="serverTimeout" />. Retryable.                        |
-| <Id rust="Store" ts="Store" />                              | The store failed.                                                                                                   |
-| <Id rust="RecordVersion" ts="Store" />                      | A record of a version this SDK does not drive; see [records across releases](recovery.mdx#records-across-releases). |
-| <Id rust="Wallet" ts="Wallet" />                            | Key derivation failed, or the client has no identity key.                                                           |
-| <Id rust="Destination" ts="Destination" />                  | The destinations hook failed.                                                                                       |
-| <Id rust="Refused" ts="Refused" />                          | The server's copy of the swap does not match your request.                                                          |
-| <Id rust="Unsigned" ts="Unsigned" />                        | Restore: the server holds no signed request for the swap.                                                           |
-| <Id rust="BadSignature" ts="BadSignature" />                | Restore: the server's copy of the request does not verify against this wallet.                                      |
-| <Id rust="ChainNotConfigured" ts="ChainNotConfigured" />    | The swap is on a chain with no chain client.                                                                        |
-| <Id rust="InvalidChainConfig" ts="Invalid" />               | A per-chain knob is out of range.                                                                                   |
-| <Id rust="Unknown" ts="UnknownSwap" />                      | The swap is not in the store.                                                                                       |
-| <Id rust="QuoteExpired" ts="QuoteExpired" />                | The quote passed `expires_at` before the swap was created.                                                          |
-| <Id rust="WrongSwapType" ts="WrongSwapType" />              | A quote or call for the other flow.                                                                                 |
-| <Id rust="NotQuotable" ts="NotQuotable" />                  | The server offers no quote for these ends.                                                                          |
-| <Id rust="AmountOutOfRange" ts="AmountOutOfRange" />        | The amount is outside the server's limits.                                                                          |
-| <Id rust="Tx, Utxo, MissingField" ts="Internal" />          | A fault in the SDK.                                                                                                 |
+| Error                                                       | Meaning                                                                                                                  |
+| ----------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| <Id rust="Chain" ts="Chain" />                              | A chain read or broadcast failed. Retryable.                                                                             |
+| <Id rust="Server(ClientError::Transport)" ts="Transport" /> | The server did not answer within [<Id rust="server_timeout" ts="serverTimeout" />](configuration.mdx#driver). Retryable. |
+| <Id rust="Store" ts="Store" />                              | The store failed.                                                                                                        |
+| <Id rust="RecordVersion" ts="Store" />                      | A record of a version this SDK does not drive; see [records across releases](recovery.mdx#records-across-releases).      |
+| <Id rust="Wallet" ts="Wallet" />                            | Key derivation failed, or the client has no wallet.                                                                      |
+| <Id rust="Destination" ts="Destination" />                  | The destinations hook failed.                                                                                            |
+| <Id rust="Refused" ts="Refused" />                          | The server's copy of the swap does not match your request.                                                               |
+| <Id rust="Unsigned" ts="Unsigned" />                        | Restore: the server holds no signed request for the swap.                                                                |
+| <Id rust="BadSignature" ts="BadSignature" />                | Restore: the server's copy of the request does not verify against this wallet.                                           |
+| <Id rust="ChainNotConfigured" ts="ChainNotConfigured" />    | The swap is on a chain with no chain client.                                                                             |
+| <Id rust="InvalidChainConfig" ts="Invalid" />               | A per-chain knob is out of range.                                                                                        |
+| <Id rust="Unknown" ts="UnknownSwap" />                      | The swap is not in the store.                                                                                            |
+| <Id rust="QuoteExpired" ts="QuoteExpired" />                | The quote passed `expires_at` before the swap was created.                                                               |
+| <Id rust="WrongSwapType" ts="WrongSwapType" />              | A quote or call for the other flow.                                                                                      |
+| <Id rust="NotQuotable" ts="NotQuotable" />                  | The server offers no quote for these ends.                                                                               |
+| <Id rust="AmountOutOfRange" ts="AmountOutOfRange" />        | The amount is outside the server's limits.                                                                               |
+| <Id rust="Tx, Utxo, MissingField" ts="Internal" />          | A fault in the SDK.                                                                                                      |
 
 ## Canceled swaps
 
-A swap the server gave up ends `Canceled` with the reason `ServerCanceled`.
+A swap the server gave up ends `Canceled` with the reason
+[`ServerCanceled`](swaps.mdx#statuses).
 Its `error_type` says why, and `cancel_message` is the server's text, for
 display:
 

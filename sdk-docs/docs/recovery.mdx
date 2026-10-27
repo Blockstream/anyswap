@@ -43,8 +43,9 @@ driver; in a browser, tabs over one store take turns on each swap.
 A record holds the swap's terms, its status, and what the chain cannot
 report. It holds no keys, so encrypting it is your choice, not a requirement.
 
-A restart is the same driver over the same store, and `run` again. Every swap
-resumes where the chain says it stands.
+A restart is the same driver over the same store, and
+[`run`](driving.mdx#in-the-background) again. Every swap resumes where the
+chain says it stands.
 
 ## Losing the store
 
@@ -70,10 +71,10 @@ const { restored, failed } = await driver.restoreAll();
 </Ts>
 </Code>
 
-| Call                                      | Effect                                                                                                                                                |
-| ----------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `restore`                                 | Rebuilds one swap after checking the request against this wallet and running the creation checks again. The swap is `Restoring` until its first pass. |
-| <Id rust="restore_all" ts="restoreAll" /> | Restores every swap the server lists for this wallet that the store lacks, and reports the ones restored and the ones that failed a check.            |
+| Call                                      | Effect                                                                                                                                                                      |
+| ----------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `restore`                                 | Rebuilds one swap after checking the request against this wallet and running the creation checks again. The swap is [`Restoring`](swaps.mdx#statuses) until its first pass. |
+| <Id rust="restore_all" ts="restoreAll" /> | Restores every swap the server lists for this wallet that the store lacks, and reports the ones restored and the ones that failed a check.                                  |
 
 A server can leave a swap out of its listing, but cannot alter one. Treat
 restore as the fallback for a lost device, and the store as the plan.
@@ -114,6 +115,7 @@ paid to. Finish such swaps with the SDK that made them.
 
 Within one `version`, a field a later SDK added reads as
 <Id rust="None" ts="null" /> until a pass fills it, as `fee` on a swap
-finished before 1.4.0; `step` makes that pass. A record of another `version`
-fails with <Id rust="RecordVersion" ts="Store" />, and an older SDK may not
-read a record a newer one wrote.
+finished before 1.4.0; [`step`](driving.mdx#by-hand) makes that pass. A
+record of another `version` fails with
+<Id rust="RecordVersion" ts="Store" />, and an older SDK may not read a record
+a newer one wrote.

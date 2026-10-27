@@ -31,12 +31,13 @@ audit.
 
 | Topic         | Rule                                                                                                                                                                                   |
 | ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Runtime       | Node 22 or later, or a browser. Signals use the global `WebSocket`, which Node ships from version 22.                                                                                  |
 | Loading       | `await initializeWasm()` once, before any other call. A browser fetches the wasm from unpkg; pass its URL to `initializeWasm` to serve it yourself. Node reads it from `node_modules`. |
 | Amounts       | A quote target is a `bigint`. Amounts in quotes and records are decimal strings, so a JSON round trip keeps every bit.                                                                 |
 | Absent values | `null` in records and statuses, `undefined` from calls.                                                                                                                                |
 | Errors        | A driver call throws `DriverError`, with `code`, `retryable` and `httpStatus`. A call on `AnySwapClient` directly throws `AnySwapError`, with `code` and `status`.                     |
 | Esplora       | Requests time out after 30 seconds. `new BitcoinEsplora(url, fetch, { timeout, signal })` sets another timeout, and `signal` aborts every request for good.                            |
-| Signals       | `client.signals(userId, { onConnectionChange })` reports when the WebSocket drops and when it is back.                                                                                 |
+| Signals       | `client.signals({ onConnectionChange })` reports when the WebSocket drops and when it is back.                                                                                         |
 
 Aborting Esplora is safe at any time, but a SwapOut in `Claiming` needs the
 driver running until its claim confirms.

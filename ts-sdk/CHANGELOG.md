@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.8.0]
+
+- **Breaking:** `AnySwapClient` takes the `wallet` that signs protected
+  requests instead of `auth.identityPrivkey`. `AnySwapAuth` is gone.
+- **Breaking:** `signals` and `subscribe` take no `userId`; they use the
+  client's wallet.
+- **Breaking:** `Wallet.identityPrivkey` is gone, and so are the bindings'
+  `signRequest` and `getPubkey`: the client signs inside the wasm module, so
+  the identity key never leaves it.
+
 ## [1.7.0]
 
 - **Breaking:** the SDK exports what an app driving swaps uses. `SwapIn`,

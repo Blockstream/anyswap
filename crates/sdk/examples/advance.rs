@@ -25,7 +25,6 @@ use std::{
 };
 
 use anyswap_sdk::{
-    bitcoin::PrivateKey,
     client::HttpClient,
     context::SwapContext,
     driver::{
@@ -111,8 +110,7 @@ fn mnemonic(dir: &Path) -> anyhow::Result<Mnemonic> {
 fn setup(dir: PathBuf) -> anyhow::Result<(Driver<Wallet>, Arc<FileStore>)> {
     fs::create_dir_all(&dir)?;
     let wallet = Wallet::from_mnemonic(&mnemonic(&dir)?, NETWORK)?;
-    let identity = PrivateKey::new(wallet.identity_privkey()?, NETWORK.bitcoin_network());
-    let client = HttpClient::new(&env_var("ANYSWAP_SERVER_URL")?, Some(identity));
+    let client = HttpClient::new(&env_var("ANYSWAP_SERVER_URL")?, Some(&wallet))?;
     let store = Arc::new(FileStore(dir));
     let driver = Driver::new(SwapContext::new(wallet), client.clone(), store.clone())
         .with_chain(

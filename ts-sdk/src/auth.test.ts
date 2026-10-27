@@ -1,4 +1,4 @@
-import { getPublicKey, etc, schnorr } from "@noble/secp256k1";
+import { etc, schnorr } from "@noble/secp256k1";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { AnySwapClient } from "./api";
 import {
@@ -9,14 +9,24 @@ import {
   type AuthHeaders,
   type RawBody,
 } from "./auth";
-import { Chain, NATIVE_ASSET, type CreateSwapRequest } from "./types";
+import {
+  Chain,
+  NATIVE_ASSET,
+  SwapNetwork,
+  type CreateSwapRequest,
+} from "./types";
+import { Wallet } from "./wallet";
 import { initializeWasm } from "./wasm";
 
-const PRIVATE_KEY = "01".repeat(32);
+const MNEMONIC =
+  "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
 const textEncoder = new TextEncoder();
+
+let wallet: Wallet;
 
 beforeAll(async () => {
   await initializeWasm();
+  wallet = Wallet.fromMnemonic(MNEMONIC, SwapNetwork.Regtest);
 });
 
 describe("signRequest", () => {
@@ -27,7 +37,7 @@ describe("signRequest", () => {
   it("returns AnySwap auth headers with a valid Schnorr signature", async () => {
     const rawBody = '{"swap_id":"swap-1"}';
     const headers = await signRequest(
-      PRIVATE_KEY,
+      wallet,
       "post",
       "/swap",
       rawBody,
@@ -35,9 +45,7 @@ describe("signRequest", () => {
       42.9,
     );
 
-    expect(headers[IDENTITY_PUBKEY_HEADER]).toBe(
-      etc.bytesToHex(getPublicKey(etc.hexToBytes(PRIVATE_KEY), true)),
-    );
+    expect(headers[IDENTITY_PUBKEY_HEADER]).toBe(wallet.identityPubkey);
     expect(headers[TIMESTAMP_HEADER]).toBe("42");
     expect(headers[SIGNATURE_HEADER]).toMatch(/^[0-9a-f]{128}$/);
     await expectSignatureValid(
@@ -53,34 +61,10 @@ describe("signRequest", () => {
     vi.useFakeTimers();
     vi.setSystemTime(1_700_000_000_987);
 
-    const headers = await signRequest(PRIVATE_KEY, "GET", "/swap");
+    const headers = await signRequest(wallet, "GET", "/swap");
 
     expect(headers[TIMESTAMP_HEADER]).toBe("1700000000");
     await expectSignatureValid(headers, "GET", "/swap", new Uint8Array(), "");
-  });
-
-  it("derives the identity pubkey from a prefixed private key via WASM", async () => {
-    const identityPubkey = etc.bytesToHex(
-      getPublicKey(etc.hexToBytes(PRIVATE_KEY), true),
-    );
-
-    const headers = await signRequest(
-      `0x${PRIVATE_KEY}`,
-      "GET",
-      "/swap/swap-1",
-      "",
-      "swap-1",
-      100,
-    );
-
-    expect(headers[IDENTITY_PUBKEY_HEADER]).toBe(identityPubkey);
-    await expectSignatureValid(
-      headers,
-      "GET",
-      "/swap/swap-1",
-      new Uint8Array(),
-      "swap-1",
-    );
   });
 
   it.each([
@@ -106,7 +90,7 @@ describe("signRequest", () => {
     "signs the exact bytes of an $name body",
     async ({ rawBody, expectedBody }) => {
       const headers = await signRequest(
-        PRIVATE_KEY,
+        wallet,
         "PATCH",
         "/swap/swap-1",
         rawBody,
@@ -126,7 +110,7 @@ describe("signRequest", () => {
 
   it("does not verify when the body differs from the signed body", async () => {
     const headers = await signRequest(
-      PRIVATE_KEY,
+      wallet,
       "PUT",
       "/swap/swap-1",
       Uint8Array.from([1, 2, 3]),
@@ -170,7 +154,7 @@ describe("AnySwapClient auth", () => {
     );
     const client = new AnySwapClient("http://server.test/", {
       fetchFn,
-      auth: { identityPrivkey: PRIVATE_KEY },
+      wallet,
     });
     const body: CreateSwapRequest = {
       protocol_version: "1",
@@ -208,7 +192,7 @@ describe("AnySwapClient auth", () => {
     );
     const client = new AnySwapClient("http://server.test", {
       fetchFn,
-      auth: { identityPrivkey: PRIVATE_KEY },
+      wallet,
     });
 
     await client.getSwaps({ userId: "user-id", limit: 10, offset: 5 });
@@ -249,36 +233,34 @@ describe("AnySwapClient auth", () => {
       close() {}
     }
     vi.stubGlobal("WebSocket", FakeWebSocket);
-    const client = new AnySwapClient("http://server.test", {
-      auth: { identityPrivkey: PRIVATE_KEY },
-    });
+    const client = new AnySwapClient("http://server.test", { wallet });
 
-    const sub = client.subscribe("user-id", () => {});
+    const sub = client.subscribe(() => {});
     await waitFor(() => urls.length > 0);
     sub.stop();
 
     const url = new URL(urls[0] ?? "");
     expect(url.protocol).toBe("ws:");
-    expect(url.pathname).toBe("/v1/subscribe/user-id");
+    expect(url.pathname).toBe(`/v1/subscribe/${wallet.userId}`);
     const headers = Object.fromEntries(
       url.searchParams.entries(),
     ) as AuthHeaders;
     await expectSignatureValid(
       headers,
       "GET",
-      "/v1/subscribe/user-id",
+      `/v1/subscribe/${wallet.userId}`,
       new Uint8Array(),
       "",
     );
   });
 
-  it("requires auth for protected swap endpoints", async () => {
+  it("requires a wallet for protected swap endpoints", async () => {
     const client = new AnySwapClient("http://server.test", {
       fetchFn: vi.fn(),
     });
 
     await expect(client.getSwap("swap-1")).rejects.toThrow(
-      "identity private key is required",
+      "a wallet is required",
     );
   });
 });

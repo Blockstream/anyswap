@@ -24,7 +24,6 @@
 
 export { AnySwapClient, AnySwapError } from "./api";
 export type {
-  AnySwapAuth,
   AnySwapClientOptions,
   GetSwapsParams,
   SwapSignals,

@@ -99,16 +99,14 @@ async function setup(
 ): Promise<{ driver: Driver; store: FileStore }> {
   mkdirSync(dir, { recursive: true });
   const wallet = Wallet.fromMnemonic(await mnemonic(dir), NETWORK);
-  const client = new AnySwapClient(env("ANYSWAP_SERVER_URL"), {
-    auth: { identityPrivkey: wallet.identityPrivkey },
-  });
+  const client = new AnySwapClient(env("ANYSWAP_SERVER_URL"), { wallet });
   const store = new FileStore(dir);
   const driver = new Driver(new SwapContext(wallet), client, store)
     .withChain(
       Chain.Bitcoin,
       new BitcoinEsplora(env("ANYSWAP_BITCOIN_ESPLORA_URL")),
     )
-    .withSignals(client.signals(wallet.userId));
+    .withSignals(client.signals());
   return { driver, store };
 }
 

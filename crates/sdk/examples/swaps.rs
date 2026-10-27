@@ -21,7 +21,7 @@
 use std::{collections::HashMap, env};
 
 use anyswap_sdk::{
-    bitcoin::{self, PrivateKey},
+    bitcoin,
     client::HttpClient,
     context::SwapContext,
     driver::{ChainConfig, Destinations, Driver, MemoryStore, TargetAmount},
@@ -92,8 +92,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let (wallet, _mnemonic) = Wallet::generate(NETWORK)?;
-    let identity = PrivateKey::new(wallet.identity_privkey()?, NETWORK.bitcoin_network());
-    let client = HttpClient::new(&env_var("ANYSWAP_SERVER_URL")?, Some(identity));
+    let client = HttpClient::new(&env_var("ANYSWAP_SERVER_URL")?, Some(&wallet))?;
 
     let mut ctx = SwapContext::new(wallet);
     let mut liquid_esplora = None;

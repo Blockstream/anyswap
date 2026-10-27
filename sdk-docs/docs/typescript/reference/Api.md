@@ -59,7 +59,7 @@ new AnySwapClient(url: string, options?: AnySwapClientOptions): AnySwapClient;
 | Parameter | Type | Description |
 | ------ | ------ | ------ |
 | `url` | `string` | Base URL of the swap server. Trailing slashes are stripped. |
-| `options` | [`AnySwapClientOptions`](#anyswapclientoptions) | Optional `fetch` implementation and auth key material for protected swap endpoints. |
+| `options` | [`AnySwapClientOptions`](#anyswapclientoptions) | Optional `fetch` implementation and the wallet that signs protected swap endpoints. |
 
 ###### Returns
 
@@ -226,7 +226,7 @@ Reveal only after the opening tx has the required confirmations.
 ##### signals()
 
 ```ts
-signals(userId: string, options?: SubscribeOptions): SwapSignals;
+signals(options?: SubscribeOptions): SwapSignals;
 ```
 
 Wraps [AnySwapClient.subscribe](#subscribe) as the WASM driver's `Signals`: pass
@@ -238,7 +238,6 @@ driver reads fresh state on every pass anyway.
 
 | Parameter | Type |
 | ------ | ------ |
-| `userId` | `string` |
 | `options` | [`SubscribeOptions`](#subscribeoptions) |
 
 ###### Returns
@@ -248,13 +247,10 @@ driver reads fresh state on every pass anyway.
 ##### subscribe()
 
 ```ts
-subscribe(
-   userId: string, 
-   onUpdate: (update?: SwapStateUpdate) => void, 
-   options?: SubscribeOptions): Subscription;
+subscribe(onUpdate: (update?: SwapStateUpdate) => void, options?: SubscribeOptions): Subscription;
 ```
 
-Subscribes to swap-change signals for `userId` over the server's WebSocket.
+Subscribes to the wallet's swap-change signals over the server's WebSocket.
 `onUpdate` gets the `{ swap_id, status }` signal per transition, or
 `undefined` on (re)connect and on an unparseable frame ("resync, swap
 unknown"). It is a nudge: read authoritative state over HTTP
@@ -264,7 +260,7 @@ it reconnects with a freshly signed upgrade after a second, doubling to 30
 seconds while attempts fail and back to a second once one opens, until the
 returned handle's `stop()` is called, and `onConnectionChange` hears of
 each drop and each return. The server pings every 30 seconds to keep the
-socket alive and allows 16 subscriptions per `userId`; a browser tab holds
+socket alive and allows 16 subscriptions per wallet; a browser tab holds
 one.
 
 Requires a global `WebSocket` (browsers, Node >= 22).
@@ -273,7 +269,6 @@ Requires a global `WebSocket` (browsers, Node >= 22).
 
 | Parameter | Type |
 | ------ | ------ |
-| `userId` | `string` |
 | `onUpdate` | (`update?`: [`SwapStateUpdate`](Types.md#swapstateupdate)) => `void` |
 | `options` | [`SubscribeOptions`](#subscribeoptions) |
 
@@ -285,18 +280,6 @@ a [Subscription](#subscription); call `stop()` to close it.
 
 ## Interfaces
 
-### AnySwapAuth
-
-Identity key material used to sign protected AnySwap requests.
-
-#### Properties
-
-| Property | Type | Description |
-| ------ | ------ | ------ |
-| <a id="property-identityprivkey"></a> `identityPrivkey` | `string` | Stable wallet identity private key, hex-encoded. |
-
-***
-
 ### AnySwapClientOptions
 
 Options for [AnySwapClient](#anyswapclient).
@@ -305,8 +288,8 @@ Options for [AnySwapClient](#anyswapclient).
 
 | Property | Type | Description |
 | ------ | ------ | ------ |
-| <a id="property-auth"></a> `auth?` | [`AnySwapAuth`](#anyswapauth) | Identity key material for protected swap endpoints. |
 | <a id="property-fetchfn"></a> `fetchFn?` | (`input`: `string` \| `URL` \| `Request`, `init?`: `RequestInit`) => `Promise`&lt;`Response`&gt; | Optional `fetch` implementation. Defaults to the global `fetch`. |
+| <a id="property-wallet"></a> `wallet?` | [`Wallet`](Wallet.md#wallet) | The wallet whose identity key signs protected requests, inside the wasm module. Without one, only the public endpoints work. |
 
 ***
 
@@ -334,7 +317,7 @@ simply not applied.
 | <a id="property-search"></a> `search?` | `string` | Keeps swaps where one of `swapId`, `paymentHash`, `claimInvoice`, `sourceTxid`, `destTxid`, or `userClaimAddress` equals this value. The match ignores case but is exact, so a prefix of a txid finds nothing. |
 | <a id="property-status"></a> `status?` | [`SwapStatus`](Types.md#swapstatus)[] | Keeps swaps in any of these statuses, e.g. `["Claimed", "Refunded"]`. |
 | <a id="property-swaptype"></a> `swapType?` | [`SwapType`](Types.md#swaptype) | Keeps only swaps of this type. |
-| <a id="property-userid"></a> `userId` | `string` | User identifier, typically [Wallet.userId](Wallet.md#userid). |
+| <a id="property-userid"></a> `userId` | `string` | User identifier, typically [!Wallet.userId \| Wallet.userId](Wallet.md#wallet). |
 | <a id="property-withcreaterequest"></a> `withCreateRequest?` | `boolean` | `true` includes each swap's `create_request_*` fields, as `getSwap` does; a page omits them otherwise. |
 
 ***

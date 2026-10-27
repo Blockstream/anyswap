@@ -19,7 +19,7 @@ checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
 name = "anyswap-core"
-version = "1.7.0"
+version = "1.8.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -43,7 +43,7 @@ dependencies = [
 
 [[package]]
 name = "anyswap-sdk"
-version = "1.7.0"
+version = "1.8.0"
 dependencies = [
  "anyhow",
  "anyswap-core",
@@ -66,11 +66,12 @@ dependencies = [
  "uuid",
  "wasm-bindgen",
  "wasm-bindgen-futures",
+ "zeroize",
 ]
 
 [[package]]
 name = "anyswap-wasm"
-version = "1.7.0"
+version = "1.8.0"
 dependencies = [
  "anyswap-sdk",
  "async-trait",
@@ -85,6 +86,7 @@ dependencies = [
  "uuid",
  "wasm-bindgen",
  "wasm-bindgen-futures",
+ "zeroize",
 ]
 
 [[package]]
@@ -154,6 +156,7 @@ dependencies = [
  "rand_core 0.6.4",
  "serde",
  "unicode-normalization",
+ "zeroize",
 ]
 
 [[package]]
@@ -2308,6 +2311,20 @@ name = "zeroize"
 version = "1.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e13c156562582aa81c60cb29407084cdb54c4164760106ab78e6c5b0858cf64e"
+dependencies = [
+ "zeroize_derive",
+]
+
+[[package]]
+name = "zeroize_derive"
+version = "1.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3c50655cbb0fe3fc43170059e702f1ce5e19b84cec58dc87b037a09935c2f328"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
 
 [[package]]
 name = "zerotrie"

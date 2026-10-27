@@ -40,9 +40,10 @@ pub enum KeyringError {
 /// plus per-swap keys served off them.
 ///
 /// The caller declares which branch indices it uses at construction; the master
-/// key is derived, used, and dropped, so a per-swap key later costs a single
+/// key is derived, used, and erased, so a per-swap key later costs a single
 /// hash. Immutable once built, so a single instance is meant to be shared across
-/// the whole process (an `Arc` is enough; no locking).
+/// the whole process (an `Arc` is enough; no locking). Its branch keys are
+/// erased when it drops.
 #[derive(Clone)]
 pub struct Keyring {
     branches: BTreeMap<u32, Xpriv>,
@@ -56,14 +57,17 @@ impl Keyring {
         network: SwapNetwork,
         branches: &[u32],
     ) -> Result<Self, KeyringError> {
-        let master = Xpriv::new_master(network.bitcoin_network(), seed)?;
+        let mut master = Xpriv::new_master(network.bitcoin_network(), seed)?;
 
         let branches = branches
             .iter()
             .map(|&branch| Ok((branch, derive_branch(&master, network, branch)?)))
-            .collect::<Result<_, KeyringError>>()?;
+            .collect::<Result<_, KeyringError>>();
+        master.private_key.non_secure_erase();
 
-        Ok(Self { branches })
+        Ok(Self {
+            branches: branches?,
+        })
     }
 
     /// Derives the per-swap private key on `branch` for `swap_id`.
@@ -88,6 +92,14 @@ impl Keyring {
         self.branches
             .get(&branch)
             .ok_or(KeyringError::UnknownBranch(branch))
+    }
+}
+
+impl Drop for Keyring {
+    fn drop(&mut self) {
+        for xpriv in self.branches.values_mut() {
+            xpriv.private_key.non_secure_erase();
+        }
     }
 }
 

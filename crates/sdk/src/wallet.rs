@@ -36,6 +36,7 @@ use bitcoin::{
 };
 use thiserror::Error;
 use uuid::Uuid;
+use zeroize::Zeroizing;
 
 /// HMAC key that domain-separates the BIP39 seed before any BIP32 derivation.
 ///
@@ -152,10 +153,10 @@ impl Wallet {
     /// Restores a wallet from an existing mnemonic.
     pub fn from_mnemonic(mnemonic: &Mnemonic, network: SwapNetwork) -> Result<Self, WalletError> {
         let mut engine = hmac::HmacEngine::<sha512::Hash>::new(SEED_TAG.as_bytes());
-        engine.input(&mnemonic.to_seed(""));
-        let seed = hmac::Hmac::<sha512::Hash>::from_engine(engine);
+        engine.input(Zeroizing::new(mnemonic.to_seed("")).as_ref());
+        let seed = Zeroizing::new(hmac::Hmac::<sha512::Hash>::from_engine(engine).to_byte_array());
         let keyring = Keyring::from_seed(
-            seed.as_byte_array(),
+            seed.as_ref(),
             network,
             &[
                 BRANCH_SOURCE_REFUND,

@@ -14,7 +14,6 @@ picks the language of every snippet on the site.
 
 ```rust
 use anyswap_sdk::{
-    bitcoin::PrivateKey,
     client::HttpClient,
     context::SwapContext,
     driver::{ChainConfig, Driver, MemoryStore, TargetAmount},
@@ -26,8 +25,7 @@ use anyswap_sdk::{
 const NETWORK: SwapNetwork = SwapNetwork::Mainnet;
 
 let (wallet, mnemonic) = Wallet::generate(NETWORK)?;
-let identity = PrivateKey::new(wallet.identity_privkey()?, NETWORK.bitcoin_network());
-let client = HttpClient::new("https://anyswap.example.com", Some(identity));
+let client = HttpClient::new("https://anyswap.example.com", Some(&wallet))?;
 
 let driver = Driver::new(SwapContext::new(wallet), client.clone(), MemoryStore::default())
     .with_chain(
@@ -61,13 +59,11 @@ const NETWORK = SwapNetwork.Mainnet;
 
 const mnemonic = generateMnemonic(24);
 const wallet = Wallet.fromMnemonic(mnemonic, NETWORK);
-const client = new AnySwapClient("https://anyswap.example.com", {
-  auth: { identityPrivkey: wallet.identityPrivkey },
-});
+const client = new AnySwapClient("https://anyswap.example.com", { wallet });
 
 const driver = new Driver(new SwapContext(wallet), client, new MemoryStore())
   .withChain(Chain.Bitcoin, new BitcoinEsplora("https://esplora.example.com/api"))
-  .withSignals(client.signals(wallet.userId));
+  .withSignals(client.signals());
 ```
 
 </Ts>

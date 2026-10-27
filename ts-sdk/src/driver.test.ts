@@ -13,10 +13,11 @@ import { generateMnemonic } from "./utils";
 import { Wallet } from "./wallet";
 import { initializeWasm } from "./wasm";
 
-const PRIVATE_KEY = "01".repeat(32);
+let wallet: Wallet;
 
 beforeAll(async () => {
   await initializeWasm();
+  wallet = Wallet.fromMnemonic(generateMnemonic(12), SwapNetwork.Regtest);
 });
 
 function json(body: unknown, status = 200): Response {
@@ -32,9 +33,7 @@ async function waitFor(predicate: () => boolean): Promise<void> {
 
 describe("the wasm driver's interfaces", () => {
   it("are satisfied by the client, its signals and the esplora as they are", () => {
-    const client = new AnySwapClient("http://server.test", {
-      auth: { identityPrivkey: PRIVATE_KEY },
-    });
+    const client = new AnySwapClient("http://server.test", { wallet });
     const server: ServerClient = client;
     const chain: ChainClient = new BitcoinEsplora("http://esplora.test");
     const signals: (s: SwapSignals) => Signals = (s) => s;
@@ -48,7 +47,7 @@ describe("the wasm driver's interfaces", () => {
       json({ swaps: [], pagination: {} }),
     );
     const client = new AnySwapClient("http://server.test", {
-      auth: { identityPrivkey: PRIVATE_KEY },
+      wallet,
       fetchFn,
     });
 
@@ -86,13 +85,11 @@ describe("the wasm driver's interfaces", () => {
       close() {}
     }
     vi.stubGlobal("WebSocket", FakeWebSocket);
-    const client = new AnySwapClient("http://server.test", {
-      auth: { identityPrivkey: PRIVATE_KEY },
-    });
+    const client = new AnySwapClient("http://server.test", { wallet });
     const push = (swap_id: string) =>
       socket?.onmessage?.({ data: JSON.stringify({ swap_id, status: "x" }) });
 
-    const signals = client.signals("user-id");
+    const signals = client.signals();
     await waitFor(() => socket !== undefined);
     socket?.onopen?.();
     push("a");

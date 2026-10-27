@@ -7,13 +7,13 @@ members = [
 resolver = "3"
 
 [workspace.package]
-version = "1.7.0"
+version = "1.8.0"
 license = "MIT"
 repository = "https://github.com/Blockstream/anyswap"
 rust-version = "1.91"
 
 [workspace.dependencies]
-anyswap-core = { path = "crates/core", version = "~1.7.0" }
+anyswap-core = { path = "crates/core", version = "~1.8.0" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 futures-util = "0.3"
 anyhow = "1.0"
@@ -25,7 +25,8 @@ bitcoin = { version = "0.32", features = ["serde", "rand-std", "base64"] }
 elements = { version = "0.27", features = ["serde"] }
 thiserror = "2"
 uuid = { version = "1.23", features = ["v4", "v5", "js", "serde"] }
-bip39 = { version = "2", features = ["rand"] }
+bip39 = { version = "2", features = ["rand", "zeroize"] }
+zeroize = "1"
 lightning-invoice = "0.34"
 strum = { version = "0.26", features = ["derive"] }
 hex = "0.4"

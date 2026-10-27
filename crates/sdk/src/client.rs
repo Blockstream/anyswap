@@ -52,9 +52,8 @@ use anyswap_core::{
     utils::now,
 };
 use bitcoin::{
-    PrivateKey,
     hashes::{Hash, sha256},
-    secp256k1::{Keypair, Secp256k1},
+    secp256k1::Keypair,
 };
 use reqwest::{
     Method,
@@ -63,6 +62,8 @@ use reqwest::{
 use serde::Deserialize;
 use thiserror::Error;
 use uuid::Uuid;
+
+use crate::wallet::{Wallet, WalletError};
 
 #[derive(Clone, Debug, Error)]
 pub enum ClientError {
@@ -126,30 +127,32 @@ impl ClientError {
 pub struct HttpClient {
     http: reqwest::Client,
     base_url: String,
-    private_key: Option<PrivateKey>,
+    identity: Option<Keypair>,
 }
 
 impl HttpClient {
-    pub fn new(base_url: &str, private_key: Option<PrivateKey>) -> Self {
-        Self {
+    /// A client for the server at `base_url`. It signs protected requests with
+    /// `wallet`'s identity key; without a wallet, only the public endpoints
+    /// work.
+    pub fn new(base_url: &str, wallet: Option<&Wallet>) -> Result<Self, WalletError> {
+        let identity = wallet
+            .map(Wallet::identity_privkey)
+            .transpose()?
+            .map(|secret| Keypair::from_secret_key(anyswap_core::secp(), &secret));
+        Ok(Self {
             http: reqwest::Client::new(),
             base_url: base_url.trim_end_matches('/').to_string(),
-            private_key,
-        }
+            identity,
+        })
     }
 
-    pub fn set_private_key(&mut self, private_key: PrivateKey) -> &mut Self {
-        self.private_key = Some(private_key);
-        self
+    fn identity(&self) -> Result<&Keypair, ClientError> {
+        self.identity.as_ref().ok_or(ClientError::MissingPrivateKey)
     }
 
     /// The signed `/v1/subscribe/{user_id}` WebSocket URL, auth in the query.
     pub fn subscribe_url(&self) -> Result<String, ClientError> {
-        let identity_private_key = self
-            .private_key
-            .as_ref()
-            .ok_or(ClientError::MissingPrivateKey)?;
-        let keypair = identity_keypair(identity_private_key);
+        let keypair = self.identity()?;
         let pubkey = keypair.public_key();
         let user_id = sha256::Hash::hash(&pubkey.serialize()).to_string();
         let target = format!("/v1/subscribe/{user_id}");
@@ -162,7 +165,7 @@ impl HttpClient {
                 swap_id: "",
                 timestamp,
             },
-            &keypair,
+            keypair,
         );
         let base = self.base_url.replacen("http", "ws", 1);
         Ok(format!(
@@ -188,17 +191,12 @@ impl HttpClient {
     pub async fn create_swap(&self, req: &CreateSwapRequest) -> Result<(), ClientError> {
         let path = "/v1/swap";
         let body = serde_json::to_vec(req)?;
-        let identity_private_key = self
-            .private_key
-            .as_ref()
-            .ok_or(ClientError::MissingPrivateKey)?;
-        let identity_keypair = identity_keypair(identity_private_key);
         let headers = self.prepare_headers(
             &req.swap_id.to_string(),
             &Method::POST,
             path,
             &body,
-            &identity_keypair,
+            self.identity()?,
         )?;
 
         let resp = self
@@ -217,17 +215,12 @@ impl HttpClient {
     /// [`SwapIn`](crate::swap_in::SwapIn) via [`TryFrom`].
     pub async fn get_swap(&self, swap_id: Uuid) -> Result<SwapState, ClientError> {
         let path = format!("/v1/swap/{swap_id}");
-        let identity_private_key = self
-            .private_key
-            .as_ref()
-            .ok_or(ClientError::MissingPrivateKey)?;
-        let identity_keypair = identity_keypair(identity_private_key);
         let headers = self.prepare_headers(
             &swap_id.to_string(),
             &Method::GET,
             &path,
             &[],
-            &identity_keypair,
+            self.identity()?,
         )?;
 
         let resp = self
@@ -242,11 +235,7 @@ impl HttpClient {
     /// Fetches the paginated swap history for a user.
     pub async fn list_swaps(&self, query: &SwapListQuery) -> Result<SwapListResponse, ClientError> {
         let path = "/v1/swap";
-        let identity_private_key = self
-            .private_key
-            .as_ref()
-            .ok_or(ClientError::MissingPrivateKey)?;
-        let identity_keypair = identity_keypair(identity_private_key);
+        let identity = self.identity()?;
 
         let mut request = self
             .http
@@ -257,7 +246,7 @@ impl HttpClient {
             Some(query) => format!("{path}?{query}"),
             None => path.to_owned(),
         };
-        let headers = self.prepare_headers("", &Method::GET, &target, &[], &identity_keypair)?;
+        let headers = self.prepare_headers("", &Method::GET, &target, &[], identity)?;
         request.headers_mut().extend(headers);
 
         let resp = self.http.execute(request).await?;
@@ -302,18 +291,12 @@ impl HttpClient {
     ) -> Result<(), ClientError> {
         let body = serde_json::to_vec(req)?;
         let path = format!("/v1/swap/{swap_id}{path_suffix}");
-        let identity_private_key = self
-            .private_key
-            .as_ref()
-            .ok_or(ClientError::MissingPrivateKey)?;
-
-        let identity_keypair = identity_keypair(identity_private_key);
         let headers = self.prepare_headers(
             &swap_id.to_string(),
             &Method::POST,
             &path,
             &body,
-            &identity_keypair,
+            self.identity()?,
         )?;
 
         let resp = self
@@ -368,12 +351,6 @@ impl HttpClient {
     }
 }
 
-// decode the private key to keypair
-fn identity_keypair(identity_private_key: &PrivateKey) -> Keypair {
-    let secp = Secp256k1::new();
-    Keypair::from_secret_key(&secp, &identity_private_key.inner)
-}
-
 async fn check(resp: reqwest::Response) -> Result<reqwest::Response, ClientError> {
     let status = resp.status();
     if status.is_success() {
@@ -413,9 +390,8 @@ mod tests {
         time::Duration,
     };
 
-    use anyswap_core::types::Chain;
+    use anyswap_core::types::{Chain, SwapNetwork};
     use bitcoin::{
-        Network,
         hashes::{Hash, sha256},
         secp256k1::{SecretKey, schnorr::Signature},
     };
@@ -430,13 +406,8 @@ mod tests {
     }
 
     fn test_keypair() -> Keypair {
-        let secp = Secp256k1::new();
         let secret = SecretKey::from_slice(&[1; 32]).unwrap();
-        Keypair::from_secret_key(&secp, &secret)
-    }
-
-    fn test_identity_private_key() -> PrivateKey {
-        PrivateKey::new(SecretKey::from_slice(&[1; 32]).unwrap(), Network::Regtest)
+        Keypair::from_secret_key(anyswap_core::secp(), &secret)
     }
 
     fn read_request(stream: &mut TcpStream) -> RecordedRequest {
@@ -510,7 +481,7 @@ mod tests {
 
     #[test]
     fn prepare_headers_signs_the_target_including_its_query() {
-        let client = HttpClient::new("http://localhost:8083", None);
+        let client = HttpClient::new("http://localhost:8083", None).unwrap();
         let keypair = test_keypair();
         let pubkey = keypair.public_key();
         let target = "/v1/swap?user_id=alice&limit=20";
@@ -546,7 +517,7 @@ mod tests {
 
     #[test]
     fn prepare_headers_sets_verifiable_signature() {
-        let client = HttpClient::new("http://localhost:8083", None);
+        let client = HttpClient::new("http://localhost:8083", None).unwrap();
         let keypair = test_keypair();
         let pubkey = keypair.public_key();
 
@@ -579,7 +550,10 @@ mod tests {
     #[tokio::test]
     async fn create_swap_signature_verifies_against_body_swap_id() {
         let swap_id = Uuid::from_u128(0x1234567890abcdef1234567890abcdef);
-        let pubkey = test_keypair().public_key();
+        let (wallet, _) = Wallet::generate(SwapNetwork::Regtest).unwrap();
+        let pubkey =
+            Keypair::from_secret_key(anyswap_core::secp(), &wallet.identity_privkey().unwrap())
+                .public_key();
         let req = CreateSwapRequest {
             protocol_version: "3.0.0".into(),
             swap_id,
@@ -653,8 +627,7 @@ mod tests {
                 .unwrap();
         });
 
-        let mut client = HttpClient::new(&base_url, None);
-        client.set_private_key(test_identity_private_key());
+        let client = HttpClient::new(&base_url, Some(&wallet)).unwrap();
         let result = client.create_swap(&req).await;
         let server_result = server.join();
 

@@ -66,19 +66,17 @@ import {
   TIMESTAMP_HEADER,
   signRequest,
 } from "./auth";
-
-/** Identity key material used to sign protected AnySwap requests. */
-export interface AnySwapAuth {
-  /** Stable wallet identity private key, hex-encoded. */
-  identityPrivkey: string;
-}
+import type { Wallet } from "./wallet";
 
 /** Options for {@link AnySwapClient}. */
 export interface AnySwapClientOptions {
   /** Optional `fetch` implementation. Defaults to the global `fetch`. */
   fetchFn?: typeof fetch;
-  /** Identity key material for protected swap endpoints. */
-  auth?: AnySwapAuth;
+  /**
+   * The wallet whose identity key signs protected requests, inside the wasm
+   * module. Without one, only the public endpoints work.
+   */
+  wallet?: Wallet;
 }
 
 const RECONNECT_MIN_MS = 1_000;
@@ -197,18 +195,18 @@ export interface SwapSignals extends Subscription {
 export class AnySwapClient {
   private readonly baseUrl: string;
   private readonly fetchFn: typeof fetch;
-  private readonly auth?: AnySwapAuth;
+  private readonly wallet?: Wallet;
 
   /**
    * @param url Base URL of the swap server. Trailing slashes are stripped.
-   * @param options Optional `fetch` implementation and auth key material for
+   * @param options Optional `fetch` implementation and the wallet that signs
    * protected swap endpoints.
    */
   constructor(url: string, options: AnySwapClientOptions = {}) {
     this.baseUrl = url.replace(/\/+$/, "");
     const resolvedFetchFn = options.fetchFn ?? fetch;
     this.fetchFn = (...args) => resolvedFetchFn(...args);
-    this.auth = options.auth;
+    this.wallet = options.wallet;
   }
 
   /**
@@ -324,7 +322,7 @@ export class AnySwapClient {
   }
 
   /**
-   * Subscribes to swap-change signals for `userId` over the server's WebSocket.
+   * Subscribes to the wallet's swap-change signals over the server's WebSocket.
    * `onUpdate` gets the `{ swap_id, status }` signal per transition, or
    * `undefined` on (re)connect and on an unparseable frame ("resync, swap
    * unknown"). It is a nudge: read authoritative state over HTTP
@@ -334,7 +332,7 @@ export class AnySwapClient {
    * seconds while attempts fail and back to a second once one opens, until the
    * returned handle's `stop()` is called, and `onConnectionChange` hears of
    * each drop and each return. The server pings every 30 seconds to keep the
-   * socket alive and allows 16 subscriptions per `userId`; a browser tab holds
+   * socket alive and allows 16 subscriptions per wallet; a browser tab holds
    * one.
    *
    * Requires a global `WebSocket` (browsers, Node >= 22).
@@ -342,7 +340,6 @@ export class AnySwapClient {
    * @returns a {@link Subscription}; call `stop()` to close it.
    */
   subscribe(
-    userId: string,
     onUpdate: (update?: SwapStateUpdate) => void,
     options: SubscribeOptions = {},
   ): Subscription {
@@ -352,7 +349,7 @@ export class AnySwapClient {
     if (!ctor) {
       throw new Error("no global WebSocket available (Node < 22 has none)");
     }
-    this.requireAuth();
+    const { userId } = this.requireWallet();
     const path = `/v1/subscribe/${encodeURIComponent(userId)}`;
     let closed = false;
     let ws: WebSocketLike | null = null;
@@ -413,25 +410,21 @@ export class AnySwapClient {
    * `next` takes it; the reconnect nudge carries none and is dropped, since the
    * driver reads fresh state on every pass anyway.
    */
-  signals(userId: string, options: SubscribeOptions = {}): SwapSignals {
+  signals(options: SubscribeOptions = {}): SwapSignals {
     const queue: string[] = [];
     let wake: ((id?: string) => void) | null = null;
     let stopped = false;
-    const { stop } = this.subscribe(
-      userId,
-      (update) => {
-        const id = update?.swap_id;
-        if (!id) return;
-        if (wake) {
-          const resolve = wake;
-          wake = null;
-          resolve(id);
-        } else {
-          queue.push(id);
-        }
-      },
-      options,
-    );
+    const { stop } = this.subscribe((update) => {
+      const id = update?.swap_id;
+      if (!id) return;
+      if (wake) {
+        const resolve = wake;
+        wake = null;
+        resolve(id);
+      } else {
+        queue.push(id);
+      }
+    }, options);
     return {
       next(): Promise<string | undefined> {
         if (stopped) return Promise.resolve(undefined);
@@ -480,17 +473,14 @@ export class AnySwapClient {
     rawBody: string,
     swapId: string,
   ): Promise<Record<string, string>> {
-    const auth = this.requireAuth();
-    return signRequest(auth.identityPrivkey, method, target, rawBody, swapId);
+    return signRequest(this.requireWallet(), method, target, rawBody, swapId);
   }
 
-  private requireAuth(): AnySwapAuth {
-    if (!this.auth) {
-      throw new Error(
-        "AnySwap identity private key is required for protected swap endpoints",
-      );
+  private requireWallet(): Wallet {
+    if (!this.wallet) {
+      throw new Error("a wallet is required for protected swap endpoints");
     }
-    return this.auth;
+    return this.wallet;
   }
 
   private async buildWebSocketUrl(path: string): Promise<string> {

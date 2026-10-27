@@ -32,8 +32,8 @@ The server can delay a swap, but not redirect it. If it stops cooperating:
 | SwapOut, `Claiming`        | the driver claims by the preimage path, and must be running to do it before the CSV runs out |
 
 A SwapOut enters `Claiming` only with at least
-<Id rust="claim_margin" ts="claimMargin" /> of its CSV left: 252 blocks, about
-42 hours, on Bitcoin by default.
+[<Id rust="claim_margin" ts="claimMargin" />](configuration.mdx#per-chain) of
+its CSV left: 252 blocks, about 42 hours, on Bitcoin by default.
 
 A status comes from the chain and from secrets the driver checked itself,
 never from the server's word. The server's own label is kept as

@@ -3,8 +3,8 @@
 //! Thin `wasm-bindgen` wrapper over [`anyswap_sdk`] for browser/JS callers. The
 //! [`driver`] runs whole swaps: the page hands it a server client, a chain
 //! client and a store written in JS, and the loop runs in Rust over them.
-//! Beside it are the key derivation it runs on ([`wallet::Wallet`]), the
-//! client-wide [`context::SwapContext`], request signing ([`auth`]), and free
+//! Beside it are the key derivation and request signing it runs on
+//! ([`wallet::Wallet`]), the client-wide [`context::SwapContext`], and free
 //! functions for BOLT11 invoice parsing, the swap fee, mnemonic handling, swap
 //! id minting and the protocol version.
 //!
@@ -15,7 +15,6 @@ use std::str::FromStr;
 use anyswap_sdk::types::SwapNetwork;
 use wasm_bindgen::prelude::*;
 
-pub mod auth;
 pub mod config;
 pub mod context;
 #[cfg(target_arch = "wasm32")]

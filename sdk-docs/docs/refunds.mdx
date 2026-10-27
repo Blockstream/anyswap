@@ -8,10 +8,10 @@ Anything paid to a SwapIn's address, beyond the deposit the server was paid
 for, stays the user's. `swap.funds()` lists each such output and where its
 refund stands:
 
-| Listed                                                | When                        |
-| ----------------------------------------------------- | --------------------------- |
-| A stray: a wrong amount, a second deposit, a late one | always                      |
-| The deposit                                           | once the swap is `Canceled` |
+| Listed                                                | When                                              |
+| ----------------------------------------------------- | ------------------------------------------------- |
+| A stray: a wrong amount, a second deposit, a late one | always                                            |
+| The deposit                                           | once the swap is [`Canceled`](swaps.mdx#statuses) |
 
 An output the server took by its own path is not listed.
 
@@ -36,7 +36,8 @@ same one. Group by `txid` before adding fees up.
 
 One refund takes at most 8 funds, the most valuable first. The rest stay
 `Refundable` and go in the next refund, once this one confirms. A refund pays
-the current fee estimate, capped at <Id rust="max_fee_rate" ts="maxFeeRate" />.
+the current fee estimate, capped at
+[<Id rust="max_fee_rate" ts="maxFeeRate" />](configuration.mdx#per-chain).
 
 ## Where refunds go
 
@@ -83,16 +84,18 @@ An error from the hook fails the call that asked. A slow hook delays every
 swap, so bound any remote call in it with a timeout, and never wait on the
 user there.
 
-`refund` makes one pass that refunds every `Refundable` fund to the address,
-in any status. It returns the refund's txid, or
+`refund` makes one [pass](driving.mdx) that refunds every `Refundable` fund to
+the address, in any status. It returns the refund's txid, or
 <Id rust="None" ts="undefined" /> while nothing is refundable or an earlier
 refund is unconfirmed.
 
 ## Late deposits
 
-`run` watches an ended SwapIn while its funds are still moving, and for
-<Id rust="refund_timeout" ts="refundTimeout" /> after it ends. A deposit sent
-later is found by `step`:
+In the background, [`run`](driving.mdx#in-the-background) keeps watching a
+SwapIn after it ends: while its funds are still moving, and for
+[<Id rust="refund_timeout" ts="refundTimeout" />](configuration.mdx#driver)
+after that. It does not see a deposit sent later. Find one with a pass by
+hand, [`step`](driving.mdx#by-hand):
 
 <Code>
 <Rust>
@@ -119,5 +122,5 @@ if (swap) {
 </Code>
 
 The deposit shows in `funds`, and the status stays as it was. With somewhere
-to refund it, the swap is back in `run` until that refund confirms. `step`
-finds only what is already sent.
+to refund it, `run` drives the swap again until that refund confirms. `step`
+finds only a deposit already sent.

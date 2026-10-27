@@ -2,9 +2,10 @@
  * BIP39/BIP32 HD wallet for swap key management.
  *
  * The {@link Driver!Driver | Driver} derives every swap's keys and preimage from this
- * wallet and signs with them inside the SDK, so a caller needs the mnemonic, the
- * {@link Wallet.userId} and the identity key that authenticates protected API
- * requests. The wallet never holds user balances (deposits go directly to the P2TR
+ * wallet and signs with them inside the SDK, and
+ * {@link Api!AnySwapClient | AnySwapClient} signs protected API requests with its
+ * identity key, so no key leaves the wasm module and a caller keeps only the
+ * mnemonic. The wallet never holds user balances (deposits go directly to the P2TR
  * swap address).
  *
  * ## Key derivation
@@ -69,11 +70,6 @@ export class Wallet {
   /** Network string the wallet was created for. */
   get network(): string {
     return this.inner.network;
-  }
-
-  /** Stable identity private key used to authenticate protected API requests. */
-  get identityPrivkey(): string {
-    return this.inner.identityPrivkey();
   }
 
   /** Stable compressed identity public key sent with protected API requests. */
