@@ -168,6 +168,42 @@ describe("the wasm driver's interfaces", () => {
     expect(await esplora.outspend("a", 2)).toBeUndefined();
     expect(await esplora.outspend("a", 3)).toBeUndefined();
   });
+
+  it("addressHistory fetches each body once, and outspend reuses them", async () => {
+    let listed: EsploraTx[] = [
+      { txid: "a", status: { confirmed: true, block_height: 101 } },
+    ];
+    const fetchFn = vi.fn(async (input: Parameters<typeof fetch>[0]) => {
+      const url = String(input);
+      if (url.endsWith("/address/addr/txs")) return json(listed);
+      if (url.endsWith("/tx/a/outspend/0"))
+        return json({ spent: true, txid: "b", status: { confirmed: false } });
+      const txid = /\/tx\/(\w+)\/hex$/.exec(url)?.[1];
+      if (txid) return new Response(`hex-${txid}`);
+      throw new Error(`unexpected ${url}`);
+    });
+    const esplora = new BitcoinEsplora("http://esplora.test", fetchFn);
+    await esplora.addressHistory("addr");
+    listed = [
+      { txid: "c", status: { confirmed: false } },
+      { txid: "b", status: { confirmed: false } },
+      ...listed,
+    ];
+
+    const history = await esplora.addressHistory("addr");
+    const spend = await esplora.outspend("a", 0);
+
+    const bodies = fetchFn.mock.calls
+      .map(([input]) => String(input))
+      .filter((url) => url.endsWith("/hex"));
+    expect(bodies).toEqual([
+      "http://esplora.test/tx/a/hex",
+      "http://esplora.test/tx/c/hex",
+      "http://esplora.test/tx/b/hex",
+    ]);
+    expect(history.map((tx) => tx.hex)).toEqual(["hex-c", "hex-b", "hex-a"]);
+    expect(spend).toEqual({ hex: "hex-b", height: null });
+  });
 });
 
 describe("Driver", () => {
@@ -198,6 +234,20 @@ describe("Driver", () => {
   it("get resolves undefined for a swap the store lacks", async () => {
     const swap = await driver({}).get("11111111-1111-4111-8111-111111111111");
     expect(swap).toBeUndefined();
+  });
+
+  it("refuses to start outside a secure context", () => {
+    vi.stubGlobal("isSecureContext", false);
+    let error: unknown;
+    try {
+      driver({});
+    } catch (e) {
+      error = e;
+    } finally {
+      vi.unstubAllGlobals();
+    }
+    expect(error).toBeInstanceOf(DriverError);
+    expect(error).toMatchObject({ code: "Invalid", retryable: false });
   });
 
   it("throws DriverError instances that are Errors", async () => {

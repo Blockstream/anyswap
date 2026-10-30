@@ -38,7 +38,9 @@ Back it with anything durable: a table of JSON blobs keyed by `swap_id` is
 enough. Keep each record in its JSON form, `version` included, since a later
 SDK upgrades records only in that form. `list` returns ids, not records, so a
 record that fails to load stops only its own swap. Give each store one
-driver; in a browser, tabs over one store take turns on each swap.
+driver; in a browser, tabs over one store take turns on each swap. That needs a
+secure context, HTTPS or localhost, so the driver refuses to start in a page
+served over plain HTTP.
 
 A record holds the swap's terms, its status, and what the chain cannot
 report. It holds no keys, so encrypting it is your choice, not a requirement.

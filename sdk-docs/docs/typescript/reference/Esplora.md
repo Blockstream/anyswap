@@ -60,7 +60,9 @@ addressHistory(address: string): Promise<HistoryTx[]>;
 Every transaction paying or spending `address`, mempool included, with its
 raw hex and confirming height. Pages through the whole history, so a
 deposit can never hide behind unrelated transactions; a transaction the
-indexer has dropped since listing it is left out.
+indexer has dropped since listing it is left out. Bodies are fetched one
+at a time and kept as each arrives, so a later read fetches only what it
+has not seen, and one that fails partway leaves the next less to fetch.
 
 ###### Parameters
 
@@ -165,7 +167,8 @@ getFeeRate(target: number): Promise<number>;
 Estimates the fee rate in sat/vB for a given confirmation target (in
 blocks), fractional, floored at the chain's relay minimum. The indexer
 reports a fixed set of targets, so this takes the cheapest one that still
-confirms within `target`.
+confirms within `target`. With none, it throws on Bitcoin and takes the
+relay minimum on Liquid.
 
 ###### Parameters
 
@@ -426,7 +429,9 @@ addressHistory(address: string): Promise<HistoryTx[]>;
 Every transaction paying or spending `address`, mempool included, with its
 raw hex and confirming height. Pages through the whole history, so a
 deposit can never hide behind unrelated transactions; a transaction the
-indexer has dropped since listing it is left out.
+indexer has dropped since listing it is left out. Bodies are fetched one
+at a time and kept as each arrives, so a later read fetches only what it
+has not seen, and one that fails partway leaves the next less to fetch.
 
 ###### Parameters
 
@@ -531,7 +536,8 @@ getFeeRate(target: number): Promise<number>;
 Estimates the fee rate in sat/vB for a given confirmation target (in
 blocks), fractional, floored at the chain's relay minimum. The indexer
 reports a fixed set of targets, so this takes the cheapest one that still
-confirms within `target`.
+confirms within `target`. With none, it throws on Bitcoin and takes the
+relay minimum on Liquid.
 
 ###### Parameters
 

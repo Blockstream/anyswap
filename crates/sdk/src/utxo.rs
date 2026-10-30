@@ -180,6 +180,18 @@ pub(crate) fn refund_threshold(chain: Chain, fee_rate: f64) -> Option<u64> {
     fee::fee_for_vsize(chain, vsize, fee_rate).and_then(|fee| fee.checked_add(floor))
 }
 
+/// The highest fee rate, in whole sat/vB, a claim of an opening worth
+/// `value` can pay and still leave the smallest output any address takes.
+/// Sized by the preimage path, the larger of the two claim paths.
+pub(crate) fn max_claim_fee_rate(chain: Chain, value: u64) -> f64 {
+    let (vsize, dust) = match chain {
+        Chain::Bitcoin => (transaction::CLAIM_VSIZE, transaction::MAX_DUST),
+        // Liquid's builder checks no dust floor.
+        Chain::Liquid => (transaction::liquid::CLAIM_VSIZE, 0),
+    };
+    (value.saturating_sub(dust) / vsize) as f64
+}
+
 #[cfg(test)]
 pub(crate) mod fixtures {
     use anyswap_core::script::LiquidSwapScript;

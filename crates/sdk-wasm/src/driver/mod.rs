@@ -65,11 +65,27 @@ pub struct Driver {
 
 #[wasm_bindgen]
 impl Driver {
+    /// Throws an `Invalid` error outside a secure context: a page served over
+    /// plain HTTP has no Web Locks, so tabs over one store could not take
+    /// turns on a swap.
     #[wasm_bindgen(constructor)]
-    pub fn new(ctx: &SwapContext, server: JsServerClient, store: JsSwapStore) -> Driver {
-        Driver {
-            inner: SdkDriver::new(ctx.inner().clone(), server, store),
+    pub fn new(
+        ctx: &SwapContext,
+        server: JsServerClient,
+        store: JsSwapStore,
+    ) -> Result<Driver, DriverError> {
+        let secure = js_sys::Reflect::get(&js_sys::global(), &"isSecureContext".into())
+            .ok()
+            .and_then(|secure| secure.as_bool());
+        if secure == Some(false) {
+            return Err(invalid(
+                "the driver needs a secure context, HTTPS or localhost, for the Web Locks \
+                 that let tabs over one store take turns on a swap",
+            ));
         }
+        Ok(Driver {
+            inner: SdkDriver::new(ctx.inner().clone(), server, store),
+        })
     }
 
     /// Registers `bitcoin` or `liquid` with its client under `config`, or
@@ -148,6 +164,8 @@ impl Driver {
 
     /// Creates a SwapIn against `quote` with the invoice minted for its
     /// `receive_amount`. The handle carries where and how much to deposit.
+    /// Refused unless the server and the invoice both wait out the chain's
+    /// `fundingTimeout` and `minConfs + 1` blocks more.
     #[wasm_bindgen(js_name = swapIn)]
     pub async fn swap_in(
         &self,
@@ -165,7 +183,8 @@ impl Driver {
 
     /// Creates a SwapOut against `quote` paying `claimAddress`, or the
     /// destinations hook's address without one. The handle carries the hold
-    /// invoice to pay.
+    /// invoice to pay. Refused, and canceled at the server, when the hold
+    /// invoice outlasts the chain's `fundingTimeout`.
     #[wasm_bindgen(js_name = swapOut)]
     pub async fn swap_out(
         &self,
@@ -274,6 +293,14 @@ impl SwapHandle {
         self.inner.error().map(|e| DriverError::from(&e))
     }
 
+    /// The error of the last pass that could not read this swap at the
+    /// server, which leaves the record's `server_status` as an earlier read
+    /// left it; `undefined` once a read works or the swap has ended.
+    #[wasm_bindgen(getter, js_name = serverError)]
+    pub fn server_error(&self) -> Option<DriverError> {
+        self.inner.server_error().map(|e| DriverError::from(&e))
+    }
+
     /// SwapIn: the deposit address; the record's `send_amount` goes here.
     pub async fn address(&self) -> Result<String, DriverError> {
         Ok(self.inner.address().await?)
@@ -292,8 +319,8 @@ impl SwapHandle {
         to_js(&status)
     }
 
-    /// Waits for a signal or the poll interval, whichever comes first, then
-    /// makes one pass. Resolves to the status it left.
+    /// Waits for a signal, though at least 5 s, or the poll interval, whichever
+    /// comes first, then makes one pass. Resolves to the status it left.
     pub async fn advance(&self) -> Result<JsValue, DriverError> {
         let status = self.inner.advance().await?;
         to_js(&status)
@@ -316,8 +343,11 @@ impl SwapHandle {
     }
 
     /// SwapIn: one pass that refunds the `Refundable` funds to
-    /// `destination`. The txid, or `undefined` with nothing refundable yet or
-    /// an earlier refund still `Refunding`.
+    /// `destination`. An earlier refund still `Refunding` is replaced once the
+    /// fee estimate is above its rate. The txid, or `undefined` with nothing
+    /// refundable yet or the earlier refund standing. `destination` must be an
+    /// address of the swap's network, confidential on Liquid, or the refund is
+    /// refused.
     pub async fn refund(&self, destination: String) -> Result<Option<String>, DriverError> {
         Ok(self.inner.refund(&destination).await?)
     }

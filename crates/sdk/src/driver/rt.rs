@@ -85,8 +85,9 @@ impl Drop for Exclusive {
     }
 }
 
-/// Holds nothing where `navigator.locks` is missing, as in Node or outside a
-/// secure context, or refuses the request. Dropping the guard settles the
+/// Holds nothing where `navigator.locks` is missing, as in Node, or refuses
+/// the request; browsers leave it out of a page that is not a secure context,
+/// which the wasm bindings refuse to start in. Dropping the guard settles the
 /// promise the lock is held on, so a lock granted after its waiter is gone
 /// is let go at once.
 #[cfg(target_arch = "wasm32")]

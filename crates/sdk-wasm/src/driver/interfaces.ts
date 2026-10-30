@@ -24,10 +24,19 @@ export interface HistoryTx {
   height?: number | null;
 }
 
-/** Query and broadcast on one chain. A throw fails the pass, and the next pass asks again. */
+/**
+ * Query and broadcast on one chain. A throw fails the pass, and the next pass
+ * asks again. Bound each request you make, such as `fetch` with
+ * `AbortSignal.timeout`: the driver waits on a call for as long as it takes,
+ * since a history read may need many requests, and it passes swaps one at a
+ * time, each under its lock.
+ */
 export interface ChainClient {
   getHeight(): Promise<number>;
-  /** Estimate for confirmation within `target` blocks, in sat/vB. */
+  /**
+   * Estimate for confirmation within `target` blocks, in sat/vB. Throws when
+   * the backend has none.
+   */
   getFeeRate(target: number): Promise<number>;
   /** Every transaction paying or spending `address`, mempool included. */
   addressHistory(address: string): Promise<HistoryTx[]>;
@@ -47,7 +56,8 @@ export interface ChainClient {
  * given. Amounts in one are decimal strings and every integer a number,
  * and `load` hands them back the same way. `list` gives every stored
  * `swap_id` without reading the records, so one that fails to load stops
- * only its own swap.
+ * only its own swap. Must resolve promptly: the driver waits on each call
+ * while it holds the swap's lock.
  */
 export interface SwapStore {
   save(record: unknown): Promise<void>;
@@ -68,7 +78,12 @@ export interface Signals {
 export interface Destinations {
   /** Where a swap-out on `chain` claims to; asked at creation. */
   claimAddress(chain: string): string | Promise<string>;
-  /** Where a swap-in on `chain` refunds to; asked with something spendable under the script. */
+  /**
+   * Where a swap-in on `chain` refunds to; asked once it has something
+   * spendable under the script, and kept as its refund address once a refund
+   * to it is out. An address of another network, or on Liquid one that is not
+   * confidential, fails the refund, and the next pass asks again.
+   */
   refundAddress(chain: string): string | Promise<string>;
 }
 
@@ -88,7 +103,7 @@ export interface Quote {
   quote_id: string;
   /** Unix seconds. */
   expires_at: number;
-  /** Swap-in: how long after creation the server waits for the deposit to confirm, in seconds, and so the expiry to give the claim invoice. */
+  /** Swap-in: how long after creation the server waits for the deposit to confirm, in seconds. `swapIn` refuses it when the chain's `fundingTimeout` and `minConfs + 1` blocks outlast it. */
   await_opening_tx: number | null;
 }
 

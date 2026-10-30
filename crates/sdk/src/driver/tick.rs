@@ -4,18 +4,21 @@
 
 use std::cmp::Reverse;
 
-use anyswap_core::api::{CancelRequest, RevealClaimRequest, RevealPreimageRequest};
+use anyswap_core::{
+    api::{CancelRequest, RevealClaimRequest, RevealPreimageRequest},
+    utils::validate_user_address,
+};
 
 use super::{
     Driver, MaybeSend, MaybeSync, Registered,
     decide::{Action, Decision, Message, Path, Spend, decide, funds},
-    error::DriverError,
+    error::{DriverError, Refusal},
     observe::{FUNDS_PER_PASS, Observed, driven, observe},
     record::{FundState, Status, SwapRecord},
     rt, wallet_error,
 };
 use crate::{
-    swap_script::{SwapScript, Terms, Tx},
+    swap_script::{SpendPath, SwapScript, Terms, Tx},
     utxo::SwapUtxo,
     wallet::SwapWallet,
 };
@@ -37,7 +40,8 @@ impl<W: SwapWallet + MaybeSend + MaybeSync + 'static> Driver<W> {
 
     /// One pass: observe, keep what the server proved, decide, apply, refund
     /// what of ours is refundable, then save and announce what changed, an
-    /// earlier error it clears included. A failed action or save fails the
+    /// earlier error it clears and a server error that came or went included.
+    /// A failed action or save fails the
     /// pass only at its end, so neither a message the server cannot take nor
     /// a store that cannot write holds back a refund the chain alone allows.
     async fn pass(
@@ -48,13 +52,14 @@ impl<W: SwapWallet + MaybeSend + MaybeSync + 'static> Driver<W> {
         let terms = driven(record)?;
         let chain = self.chain(terms.chain)?;
         let script = self.core.ctx.script(&terms)?;
-        let observed = observe(
+        let (observed, server_error) = observe(
             record,
             &terms,
             &script,
             chain,
             &self.core.client,
             &self.config,
+            self.clock.now(),
         )
         .await?;
         let before = record.clone();
@@ -71,12 +76,19 @@ impl<W: SwapWallet + MaybeSend + MaybeSync + 'static> Driver<W> {
         if let Some(preimage) = observed.preimage() {
             record.preimage = Some(preimage);
         }
-        let decision = decide(record, &terms, &observed, &self.config, &chain.config);
+        let decision = decide(record, &terms, &observed, &chain.config);
         let applied = self.apply(record, &terms, &script, decision, chain).await;
         record.funds = funds(record, &terms, &observed, &chain.config, &record.status);
         if record.status.is_terminal() {
             record.ended_at.get_or_insert(observed.now);
         }
+        let server_moved = {
+            let mut errors = self.core.server_errors.lock().unwrap();
+            match server_error.filter(|_| !record.status.is_terminal()) {
+                Some(error) => errors.insert(record.swap_id, error).is_none(),
+                None => errors.remove(&record.swap_id).is_some(),
+            }
+        };
         let saved = if *record != before {
             self.core
                 .store
@@ -100,7 +112,7 @@ impl<W: SwapWallet + MaybeSend + MaybeSync + 'static> Driver<W> {
         applied?;
         let txid = refund?;
         let cleared = self.core.errors.lock().unwrap().remove(&record.swap_id);
-        if cleared.is_some() {
+        if cleared.is_some() || server_moved {
             self.emit(record);
         }
         Ok(txid)
@@ -195,6 +207,11 @@ impl<W: SwapWallet + MaybeSend + MaybeSync + 'static> Driver<W> {
             Message::RefundKey => &mut record.sent.refund_key,
             Message::Preimage => &mut record.sent.preimage,
         } = true;
+        if message == Message::Preimage {
+            // The claim goes out in the next pass, which `run` then takes as
+            // soon as this sweep ends rather than after `poll_interval`.
+            self.core.wake.notify_one();
+        }
         Ok(())
     }
 
@@ -243,8 +260,12 @@ impl<W: SwapWallet + MaybeSend + MaybeSync + 'static> Driver<W> {
     /// first and at most `FUNDS_PER_PASS`, once no refund of ours is left in
     /// the mempool, so the rest go after it is in a block: to `destination`,
     /// else the swap's refund address, else the hook's, asked only now that
-    /// there is something to take. By keypath while `refund_keypath` holds
-    /// the server's key, by CSV without.
+    /// there is something to take and kept as the swap's once a refund to it
+    /// is out. By keypath while `refund_keypath` holds the server's key, by
+    /// CSV without. A refund of ours left in the mempool is rebuilt over its
+    /// own funds at the current rate on every pass, on the CSV path if it took
+    /// it, since the smaller keypath refund pays less in all, and a refused
+    /// replacement leaves it standing.
     async fn refund_funds(
         &self,
         record: &mut SwapRecord,
@@ -254,41 +275,66 @@ impl<W: SwapWallet + MaybeSend + MaybeSync + 'static> Driver<W> {
         chain: &Registered,
         destination: Option<&str>,
     ) -> Result<Option<String>, DriverError> {
-        if record
-            .funds
-            .iter()
-            .any(|fund| matches!(fund.state, FundState::Refunding { .. }))
-        {
-            return Ok(None);
-        }
-        let mut refundable: Vec<_> = observed
-            .outputs
-            .iter()
-            .filter(|output| {
-                record.funds.iter().any(|fund| {
-                    fund.outpoint == output.utxo.outpoint() && fund.state == FundState::Refundable
-                })
-            })
-            .collect();
-        refundable.sort_by_key(|output| Reverse(output.value));
-        let utxos: Vec<SwapUtxo> = refundable
-            .into_iter()
-            .take(FUNDS_PER_PASS)
-            .map(|output| output.utxo.clone())
-            .collect();
+        let pending = record.funds.iter().find_map(|fund| match &fund.state {
+            FundState::Refunding { txid, .. } => Some(txid.clone()),
+            _ => None,
+        });
+        let (utxos, replaces) = match &pending {
+            Some(txid) => {
+                let taken: Vec<_> = observed
+                    .outputs
+                    .iter()
+                    .filter_map(|output| {
+                        let spend = output.spend.as_ref().filter(|spend| spend.txid == *txid)?;
+                        Some((output.utxo.clone(), spend.path))
+                    })
+                    .collect();
+                let replaces = taken.first().map(|(_, path)| *path);
+                (taken.into_iter().map(|(utxo, _)| utxo).collect(), replaces)
+            }
+            None => {
+                let mut refundable: Vec<_> = observed
+                    .outputs
+                    .iter()
+                    .filter(|output| {
+                        record.funds.iter().any(|fund| {
+                            fund.outpoint == output.utxo.outpoint()
+                                && fund.state == FundState::Refundable
+                        })
+                    })
+                    .collect();
+                refundable.sort_by_key(|output| Reverse(output.value));
+                let utxos: Vec<SwapUtxo> = refundable
+                    .into_iter()
+                    .take(FUNDS_PER_PASS)
+                    .map(|output| output.utxo.clone())
+                    .collect();
+                (utxos, None)
+            }
+        };
         if utxos.is_empty() {
             return Ok(None);
         }
         let own = &record.endpoint(terms.side).destination;
-        let destination = match (destination, own, &self.destinations) {
-            (Some(given), _, _) => given.to_owned(),
-            (None, Some(own), _) => own.clone(),
-            (None, None, Some(destinations)) => destinations
-                .refund_address(terms.chain)
-                .await
-                .map_err(DriverError::Destination)?,
+        let (destination, asked) = match (destination, own, &self.destinations) {
+            (Some(given), _, _) => (given.to_owned(), false),
+            (None, Some(own), _) => (own.clone(), false),
+            (None, None, Some(destinations)) => {
+                let address = destinations
+                    .refund_address(terms.chain)
+                    .await
+                    .map_err(DriverError::Destination)?;
+                (address, true)
+            }
             (None, None, None) => return Ok(None),
         };
+        validate_user_address(
+            "refund destination",
+            terms.chain,
+            &destination,
+            self.core.ctx.network(),
+        )
+        .map_err(|e| Refusal::Address(e.to_string()))?;
         let fee_rate = observed.fee_rate.min(chain.config.max_fee_rate);
         let ours = self
             .core
@@ -296,11 +342,24 @@ impl<W: SwapWallet + MaybeSend + MaybeSync + 'static> Driver<W> {
             .wallet()
             .source_refund_privkey(&record.swap_id)
             .map_err(wallet_error)?;
-        let tx_hex = match record.refund_keypath() {
+        let keypath = match replaces {
+            Some(SpendPath::Csv) => None,
+            _ => record.refund_keypath(),
+        };
+        let tx_hex = match keypath {
             Some(server) => script.keypath(&utxos, server, ours, &destination, fee_rate)?,
             None => script.refund_by_csv(&utxos, ours, &destination, fee_rate)?,
         };
-        let txid = chain.client.broadcast(&tx_hex).await?;
+        let txid = match chain.client.broadcast(&tx_hex).await {
+            // A rebuild identical to the refund it replaces changes nothing.
+            Ok(txid) if pending.as_ref() == Some(&txid) => return Ok(None),
+            Ok(txid) => txid,
+            Err(_) if pending.is_some() => return Ok(None),
+            Err(e) => return Err(e.into()),
+        };
+        if asked {
+            record.endpoint_mut(terms.side).destination = Some(destination);
+        }
         let fee = built_fee(terms, script, &tx_hex, &utxos);
         for fund in &mut record.funds {
             if utxos.iter().any(|utxo| utxo.outpoint() == fund.outpoint) {

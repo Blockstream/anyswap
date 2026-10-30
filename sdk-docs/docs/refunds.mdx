@@ -15,37 +15,52 @@ refund stands:
 
 An output the server took by its own path is not listed.
 
-| Fund state   | Meaning                                                                                                                                                |
-| ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `Locked`     | Under the CSV until block `at`, or unconfirmed with no `at`.                                                                                           |
-| `Refundable` | Spendable now and worth its refund: the next refund takes it.                                                                                          |
-| `Dust`       | Not worth its refund at the last rate: the fee, plus 546 sat on Bitcoin for the smallest output any address takes. Refunded once fees fall far enough. |
-| `Refunding`  | In our refund `txid`, paying `fee`, unconfirmed.                                                                                                       |
-| `Refunded`   | In our refund `txid`, paying `fee`, confirmed.                                                                                                         |
+On Liquid only outputs of the swap's asset are listed. One of another asset,
+such as USDt sent by mistake, stays the user's, but the SDK neither lists nor
+refunds it: getting it back takes a wallet that spends the swap's script with
+keys from the same mnemonic and pays the fee in L-BTC.
+
+| Fund state   | Meaning                                                                                                                                                    |
+| ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Locked`     | Under the CSV until block `at`, or unconfirmed with no `at`.                                                                                               |
+| `Refundable` | Spendable now and worth its refund: the next refund takes it.                                                                                              |
+| `Dust`       | Not worth its refund at the last rate: the fee, plus 546 sat on Bitcoin for the smallest output any address takes. `Refundable` once fees fall far enough. |
+| `Refunding`  | In our refund `txid`, paying `fee`, unconfirmed.                                                                                                           |
+| `Refunded`   | In our refund `txid`, paying `fee`, confirmed.                                                                                                             |
 
 A refund's `fee` is the whole transaction's, so every fund it took shows the
 same one. Group by `txid` before adding fees up.
 
 ## When a fund is refundable
 
-| Situation                                   | Refund                                                                       |
-| ------------------------------------------- | ---------------------------------------------------------------------------- |
-| The server canceled and handed over its key | at once, by the keypath                                                      |
-| The server is silent                        | by the CSV path, once the CSV matures                                        |
-| A stray lands after the swap is `Completed` | by the CSV path; until then the server holds both keys and can take it first |
+| Situation                                   | Refund                                |
+| ------------------------------------------- | ------------------------------------- |
+| The server canceled and handed over its key | at once, by the keypath               |
+| The server is silent                        | by the CSV path, once the CSV matures |
+| A stray lands after the swap is `Completed` | by the CSV path, once the CSV matures |
+
+The AnySwap server leaves a stray alone once the swap is `Completed`, but
+nothing on chain holds it to that: a server running other code can take the
+stray first, and the take can show as `Refunding` or `Refunded`. Stop showing
+the address once the swap is `Completed`.
 
 One refund takes at most 8 funds, the most valuable first. The rest stay
 `Refundable` and go in the next refund, once this one confirms. A refund pays
 the current fee estimate, capped at
-[<Id rust="max_fee_rate" ts="maxFeeRate" />](configuration.mdx#per-chain).
+[<Id rust="max_fee_rate" ts="maxFeeRate" />](configuration.mdx#per-chain). While
+it is unconfirmed, a pass replaces it at the estimate once the estimate is above
+its rate, paid to the address a new refund would go to.
 
 ## Where refunds go
 
 | The swap has                        | Refunds                                                                |
 | ----------------------------------- | ---------------------------------------------------------------------- |
 | A refund address, given at creation | go there by themselves                                                 |
-| None, and a destinations hook       | go where the hook says, by themselves                                  |
+| None, and a destinations hook       | go where the hook says, by themselves; it is asked once per swap       |
 | Neither                             | wait for <Id rust="swap.refund(&address)" ts="swap.refund(address)" /> |
+
+An address of another network, or on Liquid one that is not confidential, is
+refused wherever it comes from, and the hook is asked again on the next pass.
 
 The hook gives the address of a SwapIn's refund, and of a SwapOut created
 without a claim address:
@@ -85,9 +100,9 @@ swap, so bound any remote call in it with a timeout, and never wait on the
 user there.
 
 `refund` makes one [pass](driving.mdx) that refunds every `Refundable` fund to
-the address, in any status. It returns the refund's txid, or
-<Id rust="None" ts="undefined" /> while nothing is refundable or an earlier
-refund is unconfirmed.
+the address, in any status, and returns the refund's txid. It returns <Id rust="None" ts="undefined" />
+while nothing is refundable, or while an earlier refund is unconfirmed and the
+fee estimate is not above its rate.
 
 ## Late deposits
 

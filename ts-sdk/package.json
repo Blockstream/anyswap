@@ -1,6 +1,6 @@
 {
   "name": "@blockstream/anyswap-sdk",
-  "version": "1.8.0",
+  "version": "1.9.0",
   "description": "AnySwap TypeScript SDK",
   "homepage": "https://blockstream.github.io/anyswap/",
   "repository": {

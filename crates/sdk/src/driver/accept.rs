@@ -22,7 +22,7 @@ use uuid::Uuid;
 
 use super::{
     Driver, Handle, MaybeSend, MaybeSync,
-    decide::{deposit_deadline, funding_deadline},
+    decide::{deposit_deadline, hold_invoice_deadline},
     error::{DriverError, Refusal},
     observe::{driven, poll},
     record::{Endpoint, Sent, ServerStatus, Status, SwapRecord, Timestamp},
@@ -58,7 +58,8 @@ pub struct Quote {
     pub quote_id: Uuid,
     pub expires_at: Timestamp,
     /// SwapIn: how long after creation the server waits for the deposit to
-    /// confirm, in seconds, and so the expiry to give the claim invoice.
+    /// confirm, in seconds. `swap_in` refuses it when the chain's
+    /// `funding_timeout` and `min_confs + 1` blocks outlast it.
     #[serde(default)]
     pub await_opening_tx: Option<u64>,
 }
@@ -249,8 +250,7 @@ impl<W: SwapWallet + MaybeSend + MaybeSync + 'static> Driver<W> {
                 if invoice::expiry_at(claim_invoice).map_err(invoice_error)? < started_at + room {
                     return Err(Refusal::Invoice("expires too soon".into()).into());
                 }
-                let expires_at =
-                    deposit_deadline(started_at, Some(claim_invoice), config, chain_config);
+                let expires_at = deposit_deadline(started_at, Some(claim_invoice), chain_config);
                 csv_in_range(swap.csv, 1, chain_config.max_refund_csv)?;
                 let refund_address = req.user_refund_address.as_deref();
                 if swap.refund_address.as_deref() != refund_address {
@@ -337,7 +337,7 @@ impl<W: SwapWallet + MaybeSend + MaybeSync + 'static> Driver<W> {
                     chain_config.min_confs + chain_config.claim_margin,
                     0xFFFF,
                 )?;
-                let status = funding(funding_deadline(started_at, Some(hold_invoice), config));
+                let status = funding(hold_invoice_deadline(started_at, Some(hold_invoice)));
                 let terms = swap.terms();
                 SwapRecord {
                     version: SwapRecord::VERSION,
@@ -547,7 +547,7 @@ impl<W: SwapWallet + MaybeSend + MaybeSync + 'static> Driver<W> {
             .server_status()
             .is_some_and(|status| status.is_terminal())
         {
-            record.ended_at = Some(state.transitioned_at.min(anyswap_core::utils::now()));
+            record.ended_at = Some(state.transitioned_at.min(self.clock.now()));
         }
         let server = poll(&terms, state);
         record.endpoint_mut(terms.side).server_privkey = server.key;
@@ -556,7 +556,7 @@ impl<W: SwapWallet + MaybeSend + MaybeSync + 'static> Driver<W> {
         record.status = Status::Restoring;
 
         self.core.store.save(&record).await?;
-        self.signal(swap_id);
+        self.core.wake.notify_one();
         Handle::new(self.clone(), &record)
     }
 

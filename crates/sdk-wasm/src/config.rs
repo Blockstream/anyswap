@@ -24,18 +24,6 @@ impl Config {
         Config::default()
     }
 
-    /// Seconds from `started_at` until a swap with nothing on chain closes, or
-    /// a swap-out's hold invoice expiry if sooner.
-    #[wasm_bindgen(getter, js_name = fundingTimeout)]
-    pub fn funding_timeout(&self) -> u64 {
-        self.inner.funding_timeout.as_secs()
-    }
-
-    #[wasm_bindgen(setter, js_name = fundingTimeout)]
-    pub fn set_funding_timeout(&mut self, secs: u64) {
-        self.inner.funding_timeout = Duration::from_secs(secs);
-    }
-
     /// The longest a loop waits between passes without a signal, in seconds.
     #[wasm_bindgen(getter, js_name = pollInterval)]
     pub fn poll_interval(&self) -> u64 {
@@ -197,6 +185,21 @@ impl ChainConfig {
     #[wasm_bindgen(setter, js_name = blockTime)]
     pub fn set_block_time(&mut self, secs: u64) {
         self.inner.block_time = secs;
+    }
+
+    /// Seconds from `started_at`: the most a swap with nothing on chain is
+    /// given. A swap-in closes at it, or its claim invoice's expiry if sooner,
+    /// and is refused unless the server and its claim invoice both wait this
+    /// long and `minConfs + 1` blocks more. A swap-out is refused when its
+    /// hold invoice outlasts it.
+    #[wasm_bindgen(getter, js_name = fundingTimeout)]
+    pub fn funding_timeout(&self) -> u64 {
+        self.inner.funding_timeout.as_secs()
+    }
+
+    #[wasm_bindgen(setter, js_name = fundingTimeout)]
+    pub fn set_funding_timeout(&mut self, secs: u64) {
+        self.inner.funding_timeout = Duration::from_secs(secs);
     }
 }
 

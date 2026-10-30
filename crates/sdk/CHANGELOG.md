@@ -1,5 +1,54 @@
 # Changelog
 
+## [1.9.0]
+
+- **Breaking:** `BitcoinEsplora::get_fee_rate` fails when the indexer has no
+  estimate within the target, instead of reading 1 sat/vB, so the driver holds
+  a SwapOut's preimage until there is one. On regtest, which has no estimates,
+  the driver takes the chain's relay minimum when a fee read fails.
+- **Breaking:** `funding_timeout` moves from `Config` to `ChainConfig` and
+  defaults to 20 min on Bitcoin and 15 min on Liquid, where it was 24 h, so a
+  SwapIn's `expires_at` no longer runs past the server's wait for the deposit.
+  A SwapOut's `expires_at` is its hold invoice's expiry alone.
+- **Breaking:** `swap_in` refuses a swap whose quoted `await_opening_tx` or
+  claim invoice does not last the chain's `funding_timeout` and
+  `min_confs + 1` blocks more, the server's half as the new
+  `Refusal::FundingTimeout`. `swap_out` refuses, and cancels at the server, a
+  swap whose hold invoice outlasts the chain's `funding_timeout`.
+- **Breaking:** `decide` no longer takes a `Config`.
+- `Driver::with_clock` counts the driver's wall-clock deadlines on a `Clock`
+  of the caller's, such as a test's; `SystemClock` is the default.
+- A SwapOut holds its preimage while a claim at the fee estimate would cost
+  more than the opening can pay, with the estimate as `fee_rate_spike`, and its
+  claim never pays a higher rate than the opening can.
+- `fee::min_fee_rate` returns a chain's relay minimum in sat/vB.
+- A restored SwapOut reprices its claim still in the mempool even when the
+  server does not report its key, by the preimage path.
+- `run` keeps driving an ended SwapIn while a fund is `Locked`, and takes it up
+  again once a `Dust` fund is worth its refund, also with no refund address or
+  `Destinations` hook, so the fund is seen turn `Refundable`.
+- A SwapIn refund still in the mempool is replaced at the fee estimate, capped
+  at `max_fee_rate`, once the estimate is above its rate.
+- The `Destinations` hook is asked for a SwapIn's refund address once, and
+  every later refund of the swap goes there.
+- `run` and `advance` take a pass for a server signal no sooner than 5 s into
+  their wait, so a flood of signals costs one pass per 5 s. A swap created or
+  restored still gets its first pass at once.
+- `Handle::server_error` is the error of the last pass that could not read the
+  swap at the server, so a stale `server_status` shows as stale. A read that
+  works or the swap's end clears it, and the pass that sets or clears it
+  yields the swap.
+- `Handle::refund` and the `Destinations` hook's refund address are checked
+  as a refund address at creation is: one of another network, or on Liquid one
+  that is not confidential, is refused instead of paid.
+- `run` takes the pass that claims a SwapOut as soon as its preimage has gone
+  out, rather than after `poll_interval`.
+
+### Minor
+
+- Every server response is read up to 4 MiB, and a larger one fails as a
+  transport error.
+
 ## [1.8.0]
 
 - **Breaking:** `HttpClient::new` takes the `Wallet` that signs protected

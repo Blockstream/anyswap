@@ -6,7 +6,7 @@
 import type { InitInput } from "@blockstream/anyswap-wasm";
 
 const WASM_CDN_URL =
-  "https://unpkg.com/@blockstream/anyswap-wasm@1.8.0/anyswap_wasm_bg.wasm";
+  "https://unpkg.com/@blockstream/anyswap-wasm@1.9.0/anyswap_wasm_bg.wasm";
 
 export async function resolveWasmSource(): Promise<InitInput> {
   return WASM_CDN_URL;

@@ -1,13 +1,14 @@
 //! SwapOut: the hold invoice, the opening it buys, and our claim of it.
 
-use super::{Action, Decision, Message, Path, Spend, funding_deadline};
+use super::{Action, Decision, Message, Path, Spend, hold_invoice_deadline};
 use crate::{
     driver::{
-        config::{ChainConfig, Config},
+        config::ChainConfig,
         observe::{Observed, Output, Spender},
         record::{CancelReason, Status, SwapRecord},
     },
     swap_script::{SpendPath, Terms},
+    utxo,
 };
 
 /// A SwapOut turns on where the opening is and whether our preimage may have
@@ -17,17 +18,20 @@ pub(super) fn decide(
     record: &SwapRecord,
     terms: &Terms,
     observed: &Observed,
-    config: &Config,
     chain_config: &ChainConfig,
 ) -> Decision {
     let (opening, _strays) = observed.split(record.receive_amount);
     let Some(opening) = opening else {
-        return funding(record, observed, config);
+        return funding(record, observed);
     };
     // Left once tried, answered with the server's key, or seen in a claim of
-    // ours on chain, which a restored record learns only from the chain.
-    let preimage_left =
-        record.sent.preimage || record.dest.server_privkey.is_some() || record.preimage.is_some();
+    // ours on chain, which a restored record learns only from the chain. A
+    // keypath claim of ours shows the key came, even when the server withholds
+    // it from a restored record.
+    let preimage_left = record.sent.preimage
+        || record.dest.server_privkey.is_some()
+        || record.preimage.is_some()
+        || keypath_claim(opening);
     match &opening.spend {
         Some(spend) if observed.confs(spend.height) >= chain_config.min_confs => {
             spent(opening, spend)
@@ -39,7 +43,7 @@ pub(super) fn decide(
 
 /// No opening yet. Past the funding deadline the driver asks the server to
 /// cancel, and the swap ends once the server reports it canceled.
-fn funding(record: &SwapRecord, observed: &Observed, config: &Config) -> Decision {
+fn funding(record: &SwapRecord, observed: &Observed) -> Decision {
     if let Some(cancel) = &record.server_cancel {
         return Decision {
             status: Status::Canceled {
@@ -49,7 +53,7 @@ fn funding(record: &SwapRecord, observed: &Observed, config: &Config) -> Decisio
             action: None,
         };
     }
-    let expires_at = funding_deadline(record.started_at, record.source.invoice.as_deref(), config);
+    let expires_at = hold_invoice_deadline(record.started_at, record.source.invoice.as_deref());
     let send_cancel = observed.now >= expires_at && !record.sent.cancel;
     Decision {
         status: Status::Funding {
@@ -61,10 +65,11 @@ fn funding(record: &SwapRecord, observed: &Observed, config: &Config) -> Decisio
 }
 
 /// The preimage has not left. It goes out once the opening has `min_confs`
-/// and is unspent, only while the fee estimate is within `max_fee_rate` so our
-/// claim can pay it, and only while at least `claim_margin` of the CSV
-/// remains, so the claim confirms before the server can refund. Past that it
-/// never does, and the swap ends with the opening left to the server's refund.
+/// and is unspent, only while the fee estimate is within `max_fee_rate` and a
+/// claim at it leaves the opening more than dust, so our claim can pay it, and
+/// only while at least `claim_margin` of the CSV remains, so the claim
+/// confirms before the server can refund. Past that it never does, and the
+/// swap ends with the opening left to the server's refund.
 fn confirming(
     terms: &Terms,
     observed: &Observed,
@@ -86,18 +91,20 @@ fn confirming(
             action: None,
         };
     }
+    let fee_rate = observed.fee_rate;
+    let claim_pays = fee_rate <= chain_config.max_fee_rate
+        && fee_rate <= utxo::max_claim_fee_rate(terms.chain, opening.value);
     let send_preimage = opening.spend.is_none()
         && confs >= chain_config.min_confs
         && csv_left >= chain_config.claim_margin
-        && observed.fee_rate <= chain_config.max_fee_rate;
+        && claim_pays;
     Decision {
         status: Status::Confirming {
             txid: opening.utxo.txid.clone(),
             confs,
             needed: chain_config.min_confs,
             max_fee_rate: chain_config.max_fee_rate,
-            fee_rate_spike: (observed.fee_rate > chain_config.max_fee_rate)
-                .then_some(observed.fee_rate),
+            fee_rate_spike: (!claim_pays && !fee_rate.is_nan()).then_some(fee_rate),
         },
         action: send_preimage.then_some(Action::Send(Message::Preimage)),
     }
@@ -125,14 +132,17 @@ fn claiming(
     }
 }
 
-/// A claim of the opening at the current fee rate: by keypath with the
-/// server's key, by preimage once the opening has `min_confs` and the
-/// preimage was tried or seen on chain. A spend still in the mempool is
-/// outbid, the server's refund at the fee ceiling. A pending preimage claim
-/// or refund is outbid by preimage where it may go out, since the smaller
-/// keypath claim pays less in all at the same rate and can be refused. The
-/// server's key alone does not show the preimage left, so a refused keypath
-/// claim keeps it with us and the payment fails back.
+/// A claim of the opening at the current fee rate, never above what the
+/// opening can pay: by keypath with the server's key, by preimage once the
+/// opening has `min_confs` and the preimage was tried or seen on chain. A
+/// spend still in the mempool is outbid, the server's refund at the fee
+/// ceiling. A pending preimage claim or refund is outbid by preimage where it
+/// may go out, since the smaller keypath claim pays less in all at the same
+/// rate and can be refused. The server's key alone does not show the preimage
+/// left, so a refused keypath claim keeps it with us and the payment fails
+/// back. A pending keypath claim of ours without the key is a restored
+/// record's, which cannot tell whether the preimage was tried, so it is
+/// outbid by preimage.
 fn claim(
     record: &SwapRecord,
     observed: &Observed,
@@ -145,25 +155,36 @@ fn claim(
         return None;
     }
     let preimage = observed.confs(opening.height) >= chain_config.min_confs
-        && (record.sent.preimage || record.preimage.is_some());
+        && (record.sent.preimage || record.preimage.is_some() || keypath_claim(opening));
     let path = match (record.dest.server_privkey, pending.map(|spend| spend.path)) {
         (Some(server_privkey), None | Some(SpendPath::Keypath)) => Path::Keypath { server_privkey },
         _ if preimage => Path::Preimage,
         (Some(server_privkey), _) => Path::Keypath { server_privkey },
         (None, _) => return None,
     };
+    let affordable = utxo::max_claim_fee_rate(opening.utxo.chain(), opening.value);
     let fee_rate = match pending.map(|spend| spend.path) {
         Some(SpendPath::Csv) => chain_config.max_fee_rate,
         Some(SpendPath::Keypath | SpendPath::Preimage(_)) | None => {
             observed.fee_rate.min(chain_config.max_fee_rate)
         }
-    };
+    }
+    .min(affordable);
     Some(Action::Spend(Spend::Claim {
         utxo: opening.utxo.clone(),
         path,
         fee_rate,
         replaces: pending.map(|spend| spend.txid.clone()),
     }))
+}
+
+/// Whether the opening's spend is a keypath claim, which takes our key and the
+/// server's, so it is ours.
+fn keypath_claim(opening: &Output) -> bool {
+    opening
+        .spend
+        .as_ref()
+        .is_some_and(|spend| spend.path == SpendPath::Keypath)
 }
 
 /// A spend of the opening reached `min_confs`. The server's key alone opens

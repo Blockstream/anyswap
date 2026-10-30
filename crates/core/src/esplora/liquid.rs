@@ -15,9 +15,7 @@ use super::{
     AddressUtxo, ChainClient, ChainClientError, DEFAULT_TIMEOUT, EsploraError, OutpointSpend,
     SpendingTx,
 };
-
-/// Elements' `minrelaytxfee` default, and the fallback when there is no estimate.
-const MIN_FEE_RATE_SAT_PER_VB: f64 = 0.1;
+use crate::{fee, types::Chain};
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 struct ApiTxStatus {
@@ -78,17 +76,20 @@ impl LiquidEsplora {
     }
 
     pub async fn get_fee_rate(&self, target: usize) -> Result<f64, EsploraError> {
+        let min = fee::min_fee_rate(Chain::Liquid);
+        // Liquid blocks are never full, so its fee is the relay minimum
+        // whether or not there is an estimate.
         let estimate = self
             .fee_estimates()
             .await
             .ok()
             .and_then(|estimates| convert_fee_rate(target, estimates))
-            .unwrap_or(MIN_FEE_RATE_SAT_PER_VB);
+            .unwrap_or(min);
 
         if !estimate.is_finite() || estimate < 0.0 {
             return Err(EsploraError::InvalidFeeRate(estimate));
         }
-        Ok(estimate.max(MIN_FEE_RATE_SAT_PER_VB))
+        Ok(estimate.max(min))
     }
 
     async fn fee_estimates(&self) -> Result<HashMap<u16, f64>, EsploraError> {

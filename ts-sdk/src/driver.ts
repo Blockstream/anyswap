@@ -76,8 +76,9 @@ export type Height = number;
  * as a decimal string, read from the transaction on chain; `null` on a
  * swap-in's `Completed`, whose payout is the server's. `Confirming` carries
  * the chain's `maxFeeRate` as `max_fee_rate`, and a swap-out's carries
- * `fee_rate_spike`, the fee estimate in sat/vB, while it is above that and
- * holds the preimage, and leaves it out otherwise.
+ * `fee_rate_spike`, the fee estimate in sat/vB, while it holds the preimage:
+ * above that, or more than a claim of the funds can pay. It leaves it out
+ * otherwise.
  */
 export type DriverStatus =
   | { status: "Restoring" }
@@ -134,7 +135,7 @@ export type CancelReason =
  * `Locked` is under the CSV until block `at`, or unconfirmed (`null`);
  * `Refundable` is spendable and worth its refund, so the next refund takes it;
  * `Dust` is spendable but not worth its fee plus the smallest refund output
- * at the last rate, and `run` refunds it once the rate falls far enough;
+ * at the last rate, and `run` makes it `Refundable` once the rate falls far enough;
  * `Refunding` and `Refunded` are in our refund `txid`, out of
  * a block and in one. Their `fee` is the whole refund transaction's, in sats
  * as a decimal string, so every fund it took shows the same one: group by
@@ -223,6 +224,8 @@ export interface SwapRecord {
  * Durable swap records, wanted by id and nothing else. Back it with anything
  * that outlives the page, keeping each record as the object given: a future
  * SDK can upgrade old records only if they kept their self-describing form.
+ * Must resolve promptly: the driver waits on each call while it holds the
+ * swap's lock.
  */
 export interface SwapStore {
   /** Replaces any record already stored under the same `swap_id`. */
@@ -261,7 +264,12 @@ export class MemoryStore implements SwapStore {
 export interface Destinations {
   /** Where a swap-out on `chain` claims to; asked at creation. */
   claimAddress(chain: Chain): string | Promise<string>;
-  /** Where a swap-in on `chain` refunds to; asked with something refundable under the script. */
+  /**
+   * Where a swap-in on `chain` refunds to; asked once it has something
+   * refundable under the script, and kept as its refund address once a refund
+   * to it is out. An address of another network, or on Liquid one that is not
+   * confidential, fails the refund, and the next pass asks again.
+   */
   refundAddress(chain: Chain): string | Promise<string>;
 }
 
@@ -271,12 +279,6 @@ export interface Destinations {
  * seconds on the driver's own clock, never one the server reports.
  */
 export interface DriverConfig {
-  /**
-   * From creation, the latest a swap with nothing on chain asks the server to
-   * cancel; the server's window for a swap-in deposit, or a swap-out's claim
-   * invoice expiry, ends it sooner. Defaults to 86400.
-   */
-  fundingTimeout?: number;
   /** The longest wait between passes without a signal. Defaults to 15. */
   pollInterval?: number;
   /** How long a call to the server may go unanswered before it fails as `Transport`. Defaults to 30. */
@@ -317,6 +319,15 @@ export interface ChainConfig {
    * wall-clock one. Defaults to 600 on Bitcoin, 60 on Liquid.
    */
   blockTime?: number;
+  /**
+   * From creation, the most a swap with nothing on chain is given, in seconds.
+   * A swap-in asks the server to cancel at it, or at its claim invoice's
+   * expiry if sooner, and is refused unless the server and its claim invoice
+   * both wait this long and `minConfs + 1` blocks more. A swap-out is refused
+   * when its hold invoice outlasts it. Defaults to 1200 on Bitcoin, 900 on
+   * Liquid.
+   */
+  fundingTimeout?: number;
 }
 
 /**
@@ -384,7 +395,6 @@ function chainOf(end: SwapEndpoint): string | undefined {
 function wasmConfig(config: DriverConfig) {
   const wasm = new (getWasm().Config)();
   const {
-    fundingTimeout,
     pollInterval,
     serverTimeout,
     feeConfTarget,
@@ -392,8 +402,6 @@ function wasmConfig(config: DriverConfig) {
     refundTimeout,
     maxHtlcHold,
   } = config;
-  if (fundingTimeout !== undefined)
-    wasm.fundingTimeout = BigInt(fundingTimeout);
   if (pollInterval !== undefined) wasm.pollInterval = BigInt(pollInterval);
   if (serverTimeout !== undefined) wasm.serverTimeout = BigInt(serverTimeout);
   if (feeConfTarget !== undefined) wasm.feeConfTarget = feeConfTarget;
@@ -408,12 +416,21 @@ function wasmChainConfig(chain: Chain, config: ChainConfig) {
   const { ChainConfig } = getWasm();
   const wasm =
     chain === Chain.Liquid ? ChainConfig.liquid() : ChainConfig.bitcoin();
-  const { minConfs, claimMargin, maxRefundCsv, maxFeeRate, blockTime } = config;
+  const {
+    minConfs,
+    claimMargin,
+    maxRefundCsv,
+    maxFeeRate,
+    blockTime,
+    fundingTimeout,
+  } = config;
   if (minConfs !== undefined) wasm.minConfs = minConfs;
   if (claimMargin !== undefined) wasm.claimMargin = claimMargin;
   if (maxRefundCsv !== undefined) wasm.maxRefundCsv = maxRefundCsv;
   if (maxFeeRate !== undefined) wasm.maxFeeRate = maxFeeRate;
   if (blockTime !== undefined) wasm.blockTime = BigInt(blockTime);
+  if (fundingTimeout !== undefined)
+    wasm.fundingTimeout = BigInt(fundingTimeout);
   return wasm;
 }
 
@@ -427,12 +444,16 @@ export class Driver {
   private inner: WasmDriver;
 
   /**
+   * Throws an `Invalid` {@link DriverError} outside a secure context: a page
+   * served over plain HTTP has no Web Locks, so tabs over one store could not
+   * take turns on a swap.
+   *
    * @param ctx The wallet and chain parameters every swap shares.
    * @param server The server API; an {@link Api!AnySwapClient | AnySwapClient} with auth.
    * @param store Where records live between passes and across restarts.
    */
   constructor(ctx: SwapContext, server: ServerClient, store: SwapStore) {
-    this.inner = new (getWasm().Driver)(ctx.inner, server, store);
+    this.inner = sync(() => new (getWasm().Driver)(ctx.inner, server, store));
   }
 
   /**
@@ -502,7 +523,9 @@ export class Driver {
    * `receive_amount`. The handle carries where and how much to deposit. A
    * `refundAddress` is signed with the request and paid by any refund; without
    * one the {@link Destinations} hook is asked when there is something to take,
-   * or {@link SwapHandle.refund} is called with an address.
+   * or {@link SwapHandle.refund} is called with an address. Refused unless the
+   * server and the invoice both wait out the chain's `fundingTimeout` and
+   * `minConfs + 1` blocks more.
    */
   swapIn(
     quote: Quote,
@@ -517,7 +540,8 @@ export class Driver {
   /**
    * Creates a swap-out against `quote` paying `claimAddress`, or the address
    * {@link Destinations} gives without one. The handle carries the hold invoice
-   * to pay.
+   * to pay. Refused, and canceled at the server, when the hold invoice outlasts
+   * the chain's `fundingTimeout`.
    */
   swapOut(quote: Quote, claimAddress?: string): Promise<SwapHandle> {
     return call(async () =>
@@ -649,6 +673,16 @@ export class SwapHandle {
     return error && fromWasm(error);
   }
 
+  /**
+   * The error of the last pass that could not read this swap at the server,
+   * which leaves the record's `server_status` as an earlier read left it;
+   * `undefined` once a read works or the swap has ended.
+   */
+  get serverError(): DriverError | undefined {
+    const error = this.inner.serverError;
+    return error && fromWasm(error);
+  }
+
   /** Swap-in: the deposit address; the record's `send_amount` goes here. */
   address(): Promise<string> {
     return call(() => this.inner.address());
@@ -665,8 +699,8 @@ export class SwapHandle {
   }
 
   /**
-   * Waits for a signal or the poll interval, whichever comes first, then makes
-   * one pass. Resolves to the status it left.
+   * Waits for a signal, though at least 5 s, or the poll interval, whichever
+   * comes first, then makes one pass. Resolves to the status it left.
    */
   advance(): Promise<DriverStatus> {
     return call(() => this.inner.advance() as Promise<DriverStatus>);
@@ -678,8 +712,11 @@ export class SwapHandle {
 
   /**
    * Swap-in: one pass that refunds the `Refundable` funds to `destination`,
-   * in any status. The refund's txid, or `undefined` with nothing refundable
-   * yet or an earlier refund still `Refunding`.
+   * in any status. An earlier refund still `Refunding` is replaced once the
+   * fee estimate is above its rate. The refund's txid, or `undefined` with
+   * nothing refundable yet or the earlier refund standing. `destination` must
+   * be an address of the swap's network, confidential on Liquid, or the refund
+   * is refused.
    */
   refund(destination: string): Promise<string | undefined> {
     return call(() => this.inner.refund(destination));

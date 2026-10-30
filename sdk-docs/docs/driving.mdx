@@ -81,10 +81,10 @@ while (!(await swap.isTerminal())) {
 </Ts>
 </Code>
 
-| Call      | Effect                                                                                |
-| --------- | ------------------------------------------------------------------------------------- |
-| `step`    | One pass now. Returns the status.                                                     |
-| `advance` | Waits for a server signal or the poll interval, whichever comes first, then one pass. |
+| Call      | Effect                                                                                                      |
+| --------- | ----------------------------------------------------------------------------------------------------------- |
+| `step`    | One pass now. Returns the status.                                                                           |
+| `advance` | Waits for a server signal, though at least 5 s, or the poll interval, whichever comes first, then one pass. |
 
 Handles and `run` mix freely: a swap never gets two passes at once. On a
 SwapIn, a terminal status can still leave [refunds](refunds.mdx) moving.
@@ -94,18 +94,21 @@ SwapIn, a terminal status can still leave [refunds](refunds.mdx) moving.
 A failing pass sets the swap's `error`, and the next pass retries. A pass that
 works clears it and yields the swap once more.
 
-| What fails                                           | `error` | Then                                                                   |
-| ---------------------------------------------------- | ------- | ---------------------------------------------------------------------- |
-| Reading a chain                                      | set     | the swap waits for the chain                                           |
-| Broadcasting a claim or a refund                     | set     | the next pass broadcasts again                                         |
-| Reading the server                                   | not set | the swap moves on from the chain; `server_status` keeps the last label |
-| The server taking a cancel, or a SwapIn's refund key | set     | the next pass sends it again                                           |
+| What fails                                           | `error` | Then                                                    |
+| ---------------------------------------------------- | ------- | ------------------------------------------------------- |
+| Reading a chain                                      | set     | the swap waits for the chain                            |
+| Broadcasting a claim or a refund                     | set     | the next pass broadcasts again                          |
+| Reading the server                                   | not set | the swap moves on from the chain; `server_error` is set |
+| The server taking a cancel, or a SwapIn's refund key | set     | the next pass sends it again                            |
 
 <Id rust="error.retryable()" ts="error.retryable" /> is true for an outage the
 next pass may outlive, such as an unreachable chain or server, and false for
 an error that needs attention.
 
-The driver does not report whether the server is reachable.
+<Id rust="swap.server_error()" ts="swap.serverError" /> is set while the server
+cannot be read, and `server_status` keeps the last label meanwhile. The pass
+that sets or clears it yields the swap. It stays unset once the swap is
+`Completed` or `Canceled`.
 
 :::note[TypeScript]
 

@@ -68,12 +68,12 @@ console.log(`deposit ${send_amount} to ${await swap.address()}`);
 </Ts>
 </Code>
 
-| Requirement                                                           | Otherwise                                                           |
-| --------------------------------------------------------------------- | ------------------------------------------------------------------- |
-| The invoice is for exactly `receive_amount`                           | creating the swap fails                                             |
-| The invoice outlives <Id rust="min_confs" ts="minConfs" /> + 1 blocks | creating the swap fails                                             |
-| The invoice expires in `await_opening_tx` seconds                     | a longer one shows the user more time than the server waits         |
-| The user sends `send_amount` to the address as one output             | the output is a stray, refunded as [Refunds](refunds.mdx) describes |
+| Requirement                                                                                                                 | Otherwise                                                           |
+| --------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
+| The invoice is for exactly `receive_amount`                                                                                 | creating the swap fails                                             |
+| The invoice outlives <Id rust="funding_timeout" ts="fundingTimeout" /> and <Id rust="min_confs" ts="minConfs" /> + 1 blocks | creating the swap fails                                             |
+| The quote's `await_opening_tx` is as long                                                                                   | creating the swap fails                                             |
+| The user sends `send_amount` to the address as one output                                                                   | the output is a stray, refunded as [Refunds](refunds.mdx) describes |
 
 The refund address is optional: without one, a refund waits for an address
 from [the destinations hook or a call](refunds.mdx#where-refunds-go).
@@ -110,10 +110,14 @@ for `send_amount`. The payment stays pending while the server locks the funds
 on chain. Once they are deep enough, the driver releases the preimage, which
 lets the payment settle, and claims the funds to the claim address.
 
+Creating a SwapOut fails, and cancels it at the server, when the hold invoice
+expires later than <Id rust="funding_timeout" ts="fundingTimeout" /> from now.
+
 | The preimage waits while                                                      | Status                                              |
 | ----------------------------------------------------------------------------- | --------------------------------------------------- |
 | the funds have fewer than <Id rust="min_confs" ts="minConfs" /> confirmations | `Confirming`, with `confs` of `needed`              |
 | the fee estimate is above <Id rust="max_fee_rate" ts="maxFeeRate" />          | `Confirming`, with the estimate as `fee_rate_spike` |
+| a claim at the fee estimate would cost more than the funds can pay            | `Confirming`, with the estimate as `fee_rate_spike` |
 
 Once less than
 [<Id rust="claim_margin" ts="claimMargin" />](configuration.mdx#per-chain) of
@@ -121,7 +125,10 @@ the CSV is left, the preimage never goes out: the swap ends `Canceled` with
 `ClaimWindowClosed`, and the payment fails back.
 
 A SwapOut ends `Completed` once the claim confirms, or `Canceled` with the
-payment failed back or failing back.
+payment failed back or failing back. The one exception is `ServerRefunded`
+after `Claiming`: if the driver was not running to claim, a dishonest server
+may have kept the payment as well, and only the payer's wallet shows how the
+invoice ended.
 
 ## Statuses
 
@@ -136,9 +143,10 @@ payment failed back or failing back.
 | `Completed`  | both    | is paid out                               | `opening`, `payout`; SwapOut: `fee`, what the claim paid                                                   |
 | `Canceled`   | both    | did not happen, for `reason`              | `opening`, when the server's CSV refund takes it                                                           |
 
-`expires_at` is <Id rust="min_confs" ts="minConfs" /> + 1 blocks before the
-invoice expires on a SwapIn, and no later than the hold invoice's expiry on a
-SwapOut. Past it, the driver asks the server to cancel and keeps watching.
+On a SwapIn, `expires_at` is <Id rust="funding_timeout" ts="fundingTimeout" />
+after creation, or if sooner, <Id rust="min_confs" ts="minConfs" /> + 1 blocks
+before the claim invoice expires. On a SwapOut it is the hold invoice's expiry.
+Past it, the driver asks the server to cancel and keeps watching.
 
 `fee` is the network fee of the user's own claim, read from the chain. It is
 <Id rust="None" ts="null" /> until a claim is broadcast, and on a SwapIn,
@@ -157,8 +165,9 @@ A `Canceled` swap says why in `reason`:
 [`funds`](refunds.mdx) can still move after it.
 
 The record's `server_status` is the server's own label from the last time the
-driver reached it. Show it, so a swap waiting on the server says so. It is not
-a sign the server is up, and the driver never acts on it.
+driver reached it. Show it, so a swap waiting on the server says so. The driver
+never acts on it, and a [server error](driving.mdx#errors) says when it may be
+out of date.
 
 ### SwapIn
 

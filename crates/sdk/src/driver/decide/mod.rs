@@ -8,7 +8,7 @@ use anyswap_core::invoice;
 use bitcoin::secp256k1::SecretKey;
 
 use super::{
-    config::{ChainConfig, Config},
+    config::ChainConfig,
     observe::Observed,
     record::{Fund, Status, SwapRecord, Timestamp},
 };
@@ -64,12 +64,11 @@ pub fn decide(
     record: &SwapRecord,
     terms: &Terms,
     observed: &Observed,
-    config: &Config,
     chain_config: &ChainConfig,
 ) -> Decision {
     match terms.side {
-        Side::Source => swap_in::decide(record, terms, observed, config, chain_config),
-        Side::Dest => swap_out::decide(record, terms, observed, config, chain_config),
+        Side::Source => swap_in::decide(record, terms, observed, chain_config),
+        Side::Dest => swap_out::decide(record, terms, observed, chain_config),
     }
 }
 
@@ -88,29 +87,27 @@ pub fn funds(
     }
 }
 
-/// When a swap with nothing on chain cancels: `funding_timeout` after
-/// `started_at`, or sooner when `bolt11`, the invoice the user pays, expires.
-pub(super) fn funding_deadline(
+/// When a SwapOut with nothing on chain cancels: as its hold invoice expires,
+/// which is when the server stops waiting for the payment. Without an invoice
+/// to read, at once.
+pub(super) fn hold_invoice_deadline(
     started_at: Timestamp,
-    bolt11: Option<&str>,
-    config: &Config,
+    hold_invoice: Option<&str>,
 ) -> Timestamp {
-    let window = started_at + config.funding_timeout.as_secs();
-    bolt11
+    hold_invoice
         .and_then(|bolt11| invoice::expiry_at(bolt11).ok())
-        .map_or(window, |expiry| expiry.min(window))
+        .unwrap_or(started_at)
 }
 
-/// When a SwapIn with nothing on chain cancels: `min_confs + 1` blocks
-/// before the claim invoice expires, so a deposit made by then confirms in
-/// time. Never later than `funding_timeout` after `started_at`.
+/// When a SwapIn with nothing on chain cancels: `funding_timeout` after
+/// `started_at`, or `min_confs + 1` blocks before the claim invoice expires
+/// if sooner, so a deposit made by then confirms in time.
 pub(super) fn deposit_deadline(
     started_at: Timestamp,
     claim_invoice: Option<&str>,
-    config: &Config,
     chain_config: &ChainConfig,
 ) -> Timestamp {
-    let window = started_at + config.funding_timeout.as_secs();
+    let window = started_at + chain_config.funding_timeout.as_secs();
     let confirm = (u64::from(chain_config.min_confs) + 1) * chain_config.block_time;
     claim_invoice
         .and_then(|bolt11| invoice::expiry_at(bolt11).ok())

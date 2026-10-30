@@ -3,7 +3,7 @@
 use super::{Action, Decision, Message, deposit_deadline};
 use crate::{
     driver::{
-        config::{ChainConfig, Config},
+        config::ChainConfig,
         observe::{Observed, Output, Spender},
         record::{CancelReason, Fund, FundState, Status, SwapRecord},
     },
@@ -19,7 +19,6 @@ pub(super) fn decide(
     record: &SwapRecord,
     terms: &Terms,
     observed: &Observed,
-    config: &Config,
     chain_config: &ChainConfig,
 ) -> Decision {
     let (opening, _strays) = observed.split(record.send_amount);
@@ -33,22 +32,16 @@ pub(super) fn decide(
             canceled(Some(opening), CancelReason::CsvMatured)
         }
         (None, _, Some(opening)) => confirming(observed, chain_config, opening),
-        (None, _, None) => funding(record, observed, config, chain_config),
+        (None, _, None) => funding(record, observed, chain_config),
     }
 }
 
 /// No deposit yet. Past the funding deadline the driver asks the server to
 /// cancel, and the swap ends once the server's key arrives with its answer.
-fn funding(
-    record: &SwapRecord,
-    observed: &Observed,
-    config: &Config,
-    chain_config: &ChainConfig,
-) -> Decision {
+fn funding(record: &SwapRecord, observed: &Observed, chain_config: &ChainConfig) -> Decision {
     let expires_at = deposit_deadline(
         record.started_at,
         record.dest.invoice.as_deref(),
-        config,
         chain_config,
     );
     let send_cancel = observed.now >= expires_at && !record.sent.cancel;

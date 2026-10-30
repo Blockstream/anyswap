@@ -9,7 +9,7 @@ edition = "2024"
 
 [features]
 default = ["client", "ws", "driver"]
-client = ["dep:reqwest", "dep:serde", "dep:serde_json", "dep:serde_with"]
+client = ["dep:futures-util", "dep:reqwest", "dep:serde", "dep:serde_json", "dep:serde_with"]
 # Native only: tokio's `net` does not build on wasm32.
 ws = ["client", "dep:futures-util", "dep:tokio-tungstenite", "tokio/net"]
 esplora = ["anyswap-core/esplora"]
@@ -30,7 +30,7 @@ bitcoin = { workspace = true }
 elements = { workspace = true }
 futures-util = { workspace = true, optional = true }
 hex = { workspace = true }
-reqwest = { workspace = true, optional = true }
+reqwest = { workspace = true, optional = true, features = ["stream"] }
 serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 serde_with = { workspace = true, optional = true }
@@ -55,7 +55,8 @@ wasm-bindgen-futures = { version = "0.4", optional = true }
 
 [dev-dependencies]
 lightning-invoice = { workspace = true }
-tokio = { workspace = true }
+proptest = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }
 
 [[example]]
 name = "swaps"

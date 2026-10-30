@@ -4,9 +4,6 @@ use std::time::Duration;
 /// counted on the driver's own clock, never from a time the server reports.
 #[derive(Clone, Debug)]
 pub struct Config {
-    /// From `started_at`: the latest a swap with nothing on chain closes. Its
-    /// invoice's expiry, or the server's cancel, ends it sooner.
-    pub funding_timeout: Duration,
     /// The longest a loop waits between passes without a server notification.
     pub poll_interval: Duration,
     /// How long a call to the server may go unanswered before it fails as a
@@ -29,7 +26,6 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            funding_timeout: Duration::from_secs(86_400),
             poll_interval: Duration::from_secs(15),
             server_timeout: Duration::from_secs(30),
             fee_conf_target: 3,
@@ -59,6 +55,12 @@ pub struct ChainConfig {
     /// Expected block interval in seconds, to compare a block deadline against
     /// a wall-clock one.
     pub block_time: u64,
+    /// From `started_at`: the most a swap with nothing on chain is given. A
+    /// SwapIn closes at it, or sooner as its claim invoice expires, and is
+    /// refused unless the server and its claim invoice both wait this long and
+    /// `min_confs + 1` blocks more, so a deposit made in time confirms before
+    /// either gives up. A SwapOut is refused when its hold invoice outlasts it.
+    pub funding_timeout: Duration,
 }
 
 impl ChainConfig {
@@ -69,6 +71,7 @@ impl ChainConfig {
             max_refund_csv: 1008,
             max_fee_rate: 100.0,
             block_time: 600,
+            funding_timeout: Duration::from_secs(1_200),
         }
     }
 
@@ -79,6 +82,7 @@ impl ChainConfig {
             max_refund_csv: 10080,
             max_fee_rate: 1.0,
             block_time: 60,
+            funding_timeout: Duration::from_secs(900),
         }
     }
 }

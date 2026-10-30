@@ -113,9 +113,16 @@ export interface EsploraOptions {
 abstract class EsploraBase implements Esplora {
   private readonly baseUrl: string;
   private readonly fetchFn: typeof fetch;
+  /**
+   * Bodies the driver's reads already fetched, by txid. A body never changes
+   * under its txid, so a read fetches only what it has not seen.
+   */
+  private readonly txs = new Map<string, string>();
 
   /** Relay minimum in sat/vB, the floor under every estimate. */
   protected readonly minFeeRate: number = 1;
+  /** The rate when the indexer has no estimate within the target; none throws. */
+  protected readonly fallbackFeeRate?: number;
 
   /**
    * @param url Esplora base URL including any path prefix.
@@ -220,7 +227,8 @@ abstract class EsploraBase implements Esplora {
    * Estimates the fee rate in sat/vB for a given confirmation target (in
    * blocks), fractional, floored at the chain's relay minimum. The indexer
    * reports a fixed set of targets, so this takes the cheapest one that still
-   * confirms within `target`.
+   * confirms within `target`. With none, it throws on Bitcoin and takes the
+   * relay minimum on Liquid.
    */
   async getFeeRate(target: number): Promise<number> {
     const res = await this.fetchFn(`${this.baseUrl}/fee-estimates`);
@@ -237,7 +245,13 @@ abstract class EsploraBase implements Esplora {
       )
       .sort((a, b) => b.blocks - a.blocks)
       .at(0);
-    return Math.max(estimate?.rate ?? 0, this.minFeeRate);
+    const rate = estimate?.rate ?? this.fallbackFeeRate;
+    if (rate === undefined) {
+      throw new Error(
+        `esplora get_fee_rate: no estimate within ${target} blocks`,
+      );
+    }
+    return Math.max(rate, this.minFeeRate);
   }
 
   /** Transactions paying a scripthash, newest first. `lastSeen` pages past 25. */
@@ -267,7 +281,9 @@ abstract class EsploraBase implements Esplora {
    * Every transaction paying or spending `address`, mempool included, with its
    * raw hex and confirming height. Pages through the whole history, so a
    * deposit can never hide behind unrelated transactions; a transaction the
-   * indexer has dropped since listing it is left out.
+   * indexer has dropped since listing it is left out. Bodies are fetched one
+   * at a time and kept as each arrives, so a later read fetches only what it
+   * has not seen, and one that fails partway leaves the next less to fetch.
    */
   async addressHistory(address: string): Promise<HistoryTx[]> {
     const txs: EsploraTx[] = [];
@@ -279,13 +295,14 @@ abstract class EsploraBase implements Esplora {
       if (confirmed.length < 25 || !last) break;
       page = await this.addressTxs(address, last.txid);
     }
-    const history = await Promise.all(
-      txs.map(async (tx) => ({
-        hex: await this.getTx(tx.txid),
-        height: tx.status.block_height ?? null,
-      })),
-    );
-    return history.filter((tx): tx is HistoryTx => tx.hex !== null);
+    const history: HistoryTx[] = [];
+    for (const tx of txs) {
+      const hex = await this.knownTx(tx.txid);
+      if (hex !== null) {
+        history.push({ hex, height: tx.status.block_height ?? null });
+      }
+    }
+    return history;
   }
 
   /**
@@ -298,9 +315,18 @@ abstract class EsploraBase implements Esplora {
   async outspend(txid: string, vout: number): Promise<HistoryTx | undefined> {
     const spend = await this.getOutspend(txid, vout);
     if (!spend.spent || !spend.txid) return undefined;
-    const hex = await this.getTx(spend.txid);
+    const hex = await this.knownTx(spend.txid);
     if (hex === null) return undefined;
     return { hex, height: spend.status?.block_height ?? null };
+  }
+
+  /** {@link getTx} through the driver's cache of bodies. */
+  private async knownTx(txid: string): Promise<string | null> {
+    const known = this.txs.get(txid);
+    if (known !== undefined) return known;
+    const hex = await this.getTx(txid);
+    if (hex !== null) this.txs.set(txid, hex);
+    return hex;
   }
 }
 
@@ -311,4 +337,5 @@ export class BitcoinEsplora extends EsploraBase {}
 export class LiquidEsplora extends EsploraBase {
   /** Elements' relay minimum, a tenth of Bitcoin's. */
   protected readonly minFeeRate: number = 0.1;
+  protected readonly fallbackFeeRate: number = 0.1;
 }

@@ -44,6 +44,15 @@ pub fn base_fee(chain: Chain, swap_type: SwapType, fee_rate: f64, safety: f64) -
     }
 }
 
+/// The relay minimum on `chain` in sat/vB, below which nothing propagates: the
+/// default `minrelaytxfee` of Bitcoin Core and of Elements.
+pub fn min_fee_rate(chain: Chain) -> f64 {
+    match chain {
+        Chain::Bitcoin => 1.0,
+        Chain::Liquid => 0.1,
+    }
+}
+
 /// Fee a transaction of `vsize` vbytes pays on `chain` at `fee_rate` sat/vB. The
 /// single definition of what a chain charges, so quotes, the transaction
 /// builders, and callers weighing an output all price the same way.

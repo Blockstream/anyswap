@@ -6,7 +6,7 @@ use anyswap_sdk::{
         secp256k1::{Secp256k1, SecretKey},
     },
     driver::{
-        ChainConfig, Config, Decision, Endpoint, Height, Observed, Output, Sent, Spender, Status,
+        ChainConfig, Decision, Endpoint, Height, Observed, Output, Sent, Spender, Status,
         SwapRecord, Timestamp, decide,
     },
     swap_script::{Side, SpendPath, Terms},
@@ -18,8 +18,10 @@ use uuid::Uuid;
 
 pub const STARTED_AT: Timestamp = 1_700_000_000;
 pub const NOW: Timestamp = STARTED_AT + 60;
-/// `started_at + funding_timeout` under the default config.
-pub const DEADLINE: Timestamp = STARTED_AT + 86_400;
+/// When a fixture swap with nothing on chain cancels: `started_at +
+/// funding_timeout` under `ChainConfig::bitcoin()` on a SwapIn, and as its
+/// hold invoice expires on a SwapOut.
+pub const DEADLINE: Timestamp = STARTED_AT + 1_200;
 pub const TIP: Height = 1_000;
 pub const FEE_RATE: f64 = 2.0;
 pub const SEND_AMOUNT: u64 = 101_000;
@@ -86,8 +88,9 @@ pub fn swap_in() -> SwapRecord {
 }
 
 pub fn swap_out() -> SwapRecord {
+    let source = Endpoint::lightning(invoice(STARTED_AT, DEADLINE - STARTED_AT));
     let dest = Endpoint::on_chain(terms(Side::Dest, SWAP_OUT_CSV), Some("claim".into()));
-    record(Endpoint::default(), dest)
+    record(source, dest)
 }
 
 pub fn observed(outputs: Vec<Output>) -> Observed {
@@ -143,7 +146,7 @@ pub fn run_with(record: &SwapRecord, observed: &Observed, chain_config: &ChainCo
         None => Side::Dest,
     };
     let terms = record.terms(side).unwrap();
-    decide(record, &terms, observed, &Config::default(), chain_config)
+    decide(record, &terms, observed, chain_config)
 }
 
 /// A regtest invoice created at `created_at` that expires `expiry` later.

@@ -152,6 +152,15 @@ pub enum Refusal {
     #[error("csv {csv} outside {min}..={max}")]
     Csv { csv: u32, min: u32, max: u32 },
 
+    #[error(
+        "funding timeout {funding_timeout} s and {confirm} s to confirm outlast the server's wait of {await_opening_tx} s"
+    )]
+    FundingTimeout {
+        funding_timeout: u64,
+        confirm: u64,
+        await_opening_tx: u64,
+    },
+
     #[error("wallet: {0}")]
     Wallet(String),
 

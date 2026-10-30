@@ -15,11 +15,11 @@ use super::{
     AddressUtxo, ChainClient, ChainClientError, DEFAULT_TIMEOUT, EsploraError, EsploraUtxo,
     OutpointSpend, Outspend, SpendingTx,
 };
-use crate::transaction::{decode_tx_hex, encode_tx_hex};
-
-/// Relay-minimum floor applied to fee estimates: Bitcoin's default
-/// `minrelaytxfee` is one sat/vB, so nothing below it propagates.
-const MIN_FEE_RATE_SAT_PER_VB: f64 = 1.0;
+use crate::{
+    fee,
+    transaction::{decode_tx_hex, encode_tx_hex},
+    types::Chain,
+};
 
 /// Confirmed transactions per page of the address history endpoint.
 pub(crate) const HISTORY_PAGE: usize = 25;
@@ -51,14 +51,14 @@ impl BitcoinEsplora {
 
     pub async fn get_fee_rate(&self, target: usize) -> Result<f64, EsploraError> {
         let estimates = self.0.get_fee_estimates().await?;
-        // Fall back to the relay minimum when no estimates are available (e.g. regtest).
         let estimate = esplora_client::convert_fee_rate(target, estimates)
-            .map_or(MIN_FEE_RATE_SAT_PER_VB, f64::from);
+            .map(f64::from)
+            .ok_or(EsploraError::NoFeeEstimate(target))?;
 
         if !estimate.is_finite() || estimate < 0.0 {
             return Err(EsploraError::InvalidFeeRate(estimate));
         }
-        Ok(estimate.max(MIN_FEE_RATE_SAT_PER_VB))
+        Ok(estimate.max(fee::min_fee_rate(Chain::Bitcoin)))
     }
 
     pub async fn get_tx_confirmations(&self, txid: &Txid) -> Result<Option<u32>, EsploraError> {
@@ -172,7 +172,12 @@ impl BitcoinChainClient {
 #[async_trait]
 impl ChainClient for BitcoinChainClient {
     async fn get_fee_rate(&self, target: usize) -> Result<f64, ChainClientError> {
-        Ok(self.0.get_fee_rate(target).await?)
+        // The server prices and broadcasts at the relay minimum when the
+        // indexer has no estimate, as on regtest.
+        match self.0.get_fee_rate(target).await {
+            Err(EsploraError::NoFeeEstimate(_)) => Ok(fee::min_fee_rate(Chain::Bitcoin)),
+            rate => Ok(rate?),
+        }
     }
 
     async fn get_tx_confirmations(&self, txid: &str) -> Result<Option<u32>, ChainClientError> {

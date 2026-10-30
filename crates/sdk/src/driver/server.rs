@@ -125,7 +125,8 @@ impl ServerClient for HttpClient {
 /// A push channel naming swaps worth reading sooner. `None` means the channel
 /// is down; the driver waits `poll_interval` and asks again. It paces the loops
 /// and never feeds them, so an implementation may drop, repeat or invent ids
-/// and change nothing but timing.
+/// and change nothing but timing. A signal brings a pass no sooner than 5 s
+/// into the wait, so a flood of them costs one pass per 5 s.
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 pub trait Signals: MaybeSend {

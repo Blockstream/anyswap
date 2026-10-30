@@ -42,6 +42,10 @@ new Driver(
    store: SwapStore): Driver;
 ```
 
+Throws an `Invalid` [DriverError](#drivererror) outside a secure context: a page
+served over plain HTTP has no Web Locks, so tabs over one store could not
+take turns on a swap.
+
 ###### Parameters
 
 | Parameter | Type | Description |
@@ -224,7 +228,9 @@ Creates a swap-in against `quote` with the invoice minted for its
 `receive_amount`. The handle carries where and how much to deposit. A
 `refundAddress` is signed with the request and paid by any refund; without
 one the [Destinations](#destinations) hook is asked when there is something to take,
-or [SwapHandle.refund](#refund) is called with an address.
+or [SwapHandle.refund](#refund) is called with an address. Refused unless the
+server and the invoice both wait out the chain's `fundingTimeout` and
+`minConfs + 1` blocks more.
 
 ###### Parameters
 
@@ -246,7 +252,8 @@ swapOut(quote: Quote, claimAddress?: string): Promise<SwapHandle>;
 
 Creates a swap-out against `quote` paying `claimAddress`, or the address
 [Destinations](#destinations) gives without one. The handle carries the hold invoice
-to pay.
+to pay. Refused, and canceled at the server, when the hold invoice outlasts
+the chain's `fundingTimeout`.
 
 ###### Parameters
 
@@ -615,6 +622,22 @@ The error of this swap's last failing pass under [Driver.run](#run),
 
 [`DriverError`](#drivererror) \| `undefined`
 
+##### serverError
+
+###### Get Signature
+
+```ts
+get serverError(): DriverError | undefined;
+```
+
+The error of the last pass that could not read this swap at the server,
+which leaves the record's `server_status` as an earlier read left it;
+`undefined` once a read works or the swap has ended.
+
+###### Returns
+
+[`DriverError`](#drivererror) \| `undefined`
+
 ##### swapId
 
 ###### Get Signature
@@ -659,8 +682,8 @@ Swap-in: the deposit address; the record's `send_amount` goes here.
 advance(): Promise<DriverStatus>;
 ```
 
-Waits for a signal or the poll interval, whichever comes first, then makes
-one pass. Resolves to the status it left.
+Waits for a signal, though at least 5 s, or the poll interval, whichever
+comes first, then makes one pass. Resolves to the status it left.
 
 ###### Returns
 
@@ -732,8 +755,11 @@ refund(destination: string): Promise<string | undefined>;
 ```
 
 Swap-in: one pass that refunds the `Refundable` funds to `destination`,
-in any status. The refund's txid, or `undefined` with nothing refundable
-yet or an earlier refund still `Refunding`.
+in any status. An earlier refund still `Refunding` is replaced once the
+fee estimate is above its rate. The refund's txid, or `undefined` with
+nothing refundable yet or the earlier refund standing. `destination` must
+be an address of the swap's network, confidential on Liquid, or the refund
+is refused.
 
 ###### Parameters
 
@@ -815,7 +841,11 @@ The next changed swap, or `undefined` once the driver is stopped and drained, or
 
 ### ChainClient
 
-Query and broadcast on one chain. A throw fails the pass, and the next pass asks again.
+Query and broadcast on one chain. A throw fails the pass, and the next pass
+asks again. Bound each request you make, such as `fetch` with
+`AbortSignal.timeout`: the driver waits on a call for as long as it takes,
+since a history read may need many requests, and it passes swaps one at a
+time, each under its lock.
 
 #### Methods
 
@@ -861,7 +891,8 @@ Broadcasts a signed transaction and returns its txid.
 getFeeRate(target: number): Promise<number>;
 ```
 
-Estimate for confirmation within `target` blocks, in sat/vB.
+Estimate for confirmation within `target` blocks, in sat/vB. Throws when
+the backend has none.
 
 ###### Parameters
 
@@ -919,6 +950,7 @@ a confirmation, since a timelock on an unconfirmed output has not started.
 | ------ | ------ | ------ |
 | <a id="property-blocktime"></a> `blockTime?` | `number` | Expected block interval in seconds, to compare a block deadline with a wall-clock one. Defaults to 600 on Bitcoin, 60 on Liquid. |
 | <a id="property-claimmargin"></a> `claimMargin?` | `number` | How much CSV must remain when a swap-out's preimage goes out. Defaults to 252 on Bitcoin, 2520 on Liquid. |
+| <a id="property-fundingtimeout"></a> `fundingTimeout?` | `number` | From creation, the most a swap with nothing on chain is given, in seconds. A swap-in asks the server to cancel at it, or at its claim invoice's expiry if sooner, and is refused unless the server and its claim invoice both wait this long and `minConfs + 1` blocks more. A swap-out is refused when its hold invoice outlasts it. Defaults to 1200 on Bitcoin, 900 on Liquid. |
 | <a id="property-maxfeerate"></a> `maxFeeRate?` | `number` | The rate no spend goes above, in sat/vB, finite and positive. A swap-out holds its preimage while the estimate is above it. Defaults to 100 on Bitcoin, 1 on Liquid. |
 | <a id="property-maxrefundcsv"></a> `maxRefundCsv?` | `number` | The longest CSV accepted on a swap-in deposit. Defaults to 1008 on Bitcoin, 10080 on Liquid. |
 | <a id="property-minconfs"></a> `minConfs?` | `number` | The depth that releases a swap-out's preimage, and that a spend reaches before it closes a swap. Defaults to 3 on Bitcoin, 2 on Liquid. |
@@ -958,7 +990,10 @@ Where a swap-out on `chain` claims to; asked at creation.
 refundAddress(chain: Chain): string | Promise<string>;
 ```
 
-Where a swap-in on `chain` refunds to; asked with something refundable under the script.
+Where a swap-in on `chain` refunds to; asked once it has something
+refundable under the script, and kept as its refund address once a refund
+to it is out. An address of another network, or on Liquid one that is not
+confidential, fails the refund, and the next pass asks again.
 
 ###### Parameters
 
@@ -984,7 +1019,6 @@ seconds on the driver's own clock, never one the server reports.
 | ------ | ------ | ------ |
 | <a id="property-feeconftarget"></a> `feeConfTarget?` | `number` | The target every fee estimate is read at, in blocks. Defaults to 3. |
 | <a id="property-feeratecachettl"></a> `feeRateCacheTtl?` | `number` | How long a chain's fee estimate is reused before it is read again; zero reads it every pass. Defaults to 30. |
-| <a id="property-fundingtimeout"></a> `fundingTimeout?` | `number` | From creation, the latest a swap with nothing on chain asks the server to cancel; the server's window for a swap-in deposit, or a swap-out's claim invoice expiry, ends it sooner. Defaults to 86400. |
 | <a id="property-maxhtlchold"></a> `maxHtlcHold?` | `number` | The longest a swap-out's hold invoice may hold the payment, in Lightning blocks. Defaults to 1008. |
 | <a id="property-pollinterval"></a> `pollInterval?` | `number` | The longest wait between passes without a signal. Defaults to 15. |
 | <a id="property-refundtimeout"></a> `refundTimeout?` | `number` | From a swap-in's end, how long it keeps getting passes once nothing of the user's is left to move. Defaults to 3600. |
@@ -1036,7 +1070,7 @@ A quote: one read of the server's terms, locked by `quote_id` until `expires_at`
 
 | Property | Type | Description |
 | ------ | ------ | ------ |
-| <a id="property-await_opening_tx"></a> `await_opening_tx` | `number` \| `null` | Swap-in: how long after creation the server waits for the deposit to confirm, in seconds, and so the expiry to give the claim invoice. |
+| <a id="property-await_opening_tx"></a> `await_opening_tx` | `number` \| `null` | Swap-in: how long after creation the server waits for the deposit to confirm, in seconds. `swapIn` refuses it when the chain's `fundingTimeout` and `minConfs + 1` blocks outlast it. |
 | <a id="property-base_fee"></a> `base_fee` | `string` | - |
 | <a id="property-dest_asset_id"></a> `dest_asset_id` | `string` \| `null` | - |
 | <a id="property-dest_chain"></a> `dest_chain` | `string` \| `null` | - |
@@ -1265,6 +1299,8 @@ document a [SwapStore](#swapstore) holds. Amounts are sats as decimal strings.
 Durable swap records, wanted by id and nothing else. Back it with anything
 that outlives the page, keeping each record as the object given: a future
 SDK can upgrade old records only if they kept their self-describing form.
+Must resolve promptly: the driver waits on each call while it holds the
+swap's lock.
 
 #### Methods
 
@@ -1447,8 +1483,9 @@ sets it and the first pass replaces it. `fee` is what a swap-out's claim pays, i
 as a decimal string, read from the transaction on chain; `null` on a
 swap-in's `Completed`, whose payout is the server's. `Confirming` carries
 the chain's `maxFeeRate` as `max_fee_rate`, and a swap-out's carries
-`fee_rate_spike`, the fee estimate in sat/vB, while it is above that and
-holds the preimage, and leaves it out otherwise.
+`fee_rate_spike`, the fee estimate in sat/vB, while it holds the preimage:
+above that, or more than a claim of the funds can pay. It leaves it out
+otherwise.
 
 ***
 
@@ -1482,7 +1519,7 @@ Where the refund of one output of the user's stands, named by `state`.
 `Locked` is under the CSV until block `at`, or unconfirmed (`null`);
 `Refundable` is spendable and worth its refund, so the next refund takes it;
 `Dust` is spendable but not worth its fee plus the smallest refund output
-at the last rate, and `run` refunds it once the rate falls far enough;
+at the last rate, and `run` makes it `Refundable` once the rate falls far enough;
 `Refunding` and `Refunded` are in our refund `txid`, out of
 a block and in one. Their `fee` is the whole refund transaction's, in sats
 as a decimal string, so every fund it took shows the same one: group by

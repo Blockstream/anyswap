@@ -346,11 +346,11 @@ fn funding_status_does_not_move_with_the_clock() {
 #[test]
 fn deadline_leaves_confirm_room_before_invoice_expiry() {
     let mut record = swap_in();
-    record.dest.invoice = Some(invoice(STARTED_AT, 7_200));
+    record.dest.invoice = Some(invoice(STARTED_AT, 3_000));
 
     let decision = run(&record, &observed(vec![]));
 
-    assert_eq!(decision.status, funding(STARTED_AT + 7_200 - 2_400, false));
+    assert_eq!(decision.status, funding(STARTED_AT + 3_000 - 2_400, false));
 }
 
 /// When the invoice outlives `funding_timeout`, the deadline is `funding_timeout`.
@@ -361,7 +361,7 @@ fn deadline_is_capped_at_funding_timeout() {
 
     let decision = run(&record, &observed(vec![]));
 
-    assert_eq!(decision.status, funding(STARTED_AT + 86_400, false));
+    assert_eq!(decision.status, funding(DEADLINE, false));
 }
 
 /// When the invoice expires sooner than the confirm room, the deadline falls before the start and

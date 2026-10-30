@@ -134,14 +134,15 @@ impl SwapRecord {
 
     /// Nothing a pass could move. A SwapOut once its status is final. A SwapIn
     /// once its status is final, no refund of ours is unconfirmed, nothing of
-    /// ours waits for a destination to take it, and `window` has passed since
-    /// it ended, so a deposit that crossed the end is still found. `hook` is
-    /// whether the driver can ask for a refund address.
+    /// ours is locked, so a fund is seen turn refundable even with no
+    /// destination, nothing refundable waits for a destination to take it, and
+    /// `window` has passed since it ended, so a deposit that crossed the end is
+    /// still found. `hook` is whether the driver can ask for a refund address.
     pub fn is_quiet(&self, now: Timestamp, window: u64, hook: bool) -> bool {
         let destination = hook || self.source.destination.is_some();
         let busy = self.funds.iter().any(|fund| match fund.state {
-            FundState::Refunding { .. } => true,
-            FundState::Locked { .. } | FundState::Refundable => destination,
+            FundState::Refunding { .. } | FundState::Locked { .. } => true,
+            FundState::Refundable => destination,
             FundState::Dust | FundState::Refunded { .. } => false,
         });
         let watched = self
@@ -245,8 +246,8 @@ pub enum Status {
         cancel_sent: bool,
     },
     /// `max_fee_rate` is the chain's, in sat/vB. SwapOut: `fee_rate_spike` is
-    /// the fee estimate while it is above `max_fee_rate` and holds the
-    /// preimage.
+    /// the fee estimate while it holds the preimage: above `max_fee_rate`, or
+    /// more than a claim of the opening can pay.
     Confirming {
         txid: String,
         confs: u32,
@@ -275,10 +276,11 @@ pub enum Status {
         #[serde_as(as = "Option<DisplayFromStr>")]
         fee: Option<u64>,
     },
-    /// The swap did not happen, for `reason`. On a SwapOut the invoice fails
-    /// back: the server canceled before any opening, or `opening` is left to
-    /// its CSV refund. On a SwapIn the deposit stays ours, with the rest of
-    /// `funds`.
+    /// The swap did not happen, for `reason`. On a SwapOut the server canceled
+    /// before any opening, or `opening` is left to its CSV refund, and the
+    /// invoice fails back, unless a server that took the preimage refunded as
+    /// well, which only the payer's wallet can tell. On a SwapIn the deposit
+    /// stays ours, with the rest of `funds`.
     Canceled {
         opening: Option<String>,
         reason: CancelReason,
@@ -291,7 +293,8 @@ impl Status {
     }
 }
 
-// `max_fee_rate` is finite and `fee_rate_spike` is above it, so neither is NaN.
+// `max_fee_rate` is finite and `fee_rate_spike` is never set to NaN, so neither
+// is NaN.
 impl Eq for Status {}
 
 /// Why a swap ended `Canceled`.

@@ -68,6 +68,12 @@ import {
 } from "./auth";
 import type { Wallet } from "./wallet";
 
+/**
+ * The largest body read from the server. A full restore page, 100 swaps with
+ * their create requests, is under half a MiB.
+ */
+const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
+
 /** Options for {@link AnySwapClient}. */
 export interface AnySwapClientOptions {
   /** Optional `fetch` implementation. Defaults to the global `fetch`. */
@@ -496,9 +502,40 @@ export class AnySwapClient {
 
   private async handleResponse<T>(res: Response): Promise<T> {
     if (!res.ok) {
-      const detail = (await res.json().catch(() => ({}))) as ApiError;
+      const detail = parseJson(await readBody(res).catch(() => "")) as ApiError;
       throw new AnySwapError(res.status, detail);
     }
-    return (await res.json().catch(() => ({}))) as T;
+    return parseJson(await readBody(res)) as T;
+  }
+}
+
+/**
+ * `res`'s body as text, read up to `MAX_RESPONSE_BYTES` so that one answer
+ * cannot exhaust the app's memory.
+ */
+async function readBody(res: Response): Promise<string> {
+  const reader = res.body?.getReader();
+  if (!reader) return "";
+  const decoder = new TextDecoder();
+  let text = "";
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) return text + decoder.decode();
+    size += value.byteLength;
+    if (size > MAX_RESPONSE_BYTES) {
+      await reader.cancel();
+      throw new Error(`server response over ${MAX_RESPONSE_BYTES} bytes`);
+    }
+    text += decoder.decode(value, { stream: true });
+  }
+}
+
+/** `text` as JSON, or an empty object when it is not, as for a POST's empty body. */
+function parseJson(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return {};
   }
 }

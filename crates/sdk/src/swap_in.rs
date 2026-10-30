@@ -231,8 +231,9 @@ impl SwapIn {
     /// Every output of `tx_hex` paying the deposit address: the deposit itself,
     /// and any strays sent to the same address.
     ///
-    /// On Liquid an output that does not unblind with this swap's key, or that
-    /// holds another asset, belongs to someone else and is skipped.
+    /// On Liquid an output that does not unblind with this swap's key belongs
+    /// to someone else and is skipped. One that holds another asset is skipped
+    /// too: it is the user's, but no builder here spends it.
     pub fn outputs<W: SwapWallet>(
         &self,
         ctx: &SwapContext<W>,

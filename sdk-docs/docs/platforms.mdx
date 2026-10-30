@@ -56,7 +56,7 @@ backend, such as Electrum, implements the chain client interface:
 | Method                                            | Returns                                                                             |
 | ------------------------------------------------- | ----------------------------------------------------------------------------------- |
 | <Id rust="height" ts="getHeight" />               | the tip height                                                                      |
-| <Id rust="fee_rate" ts="getFeeRate" />            | the fee estimate for `target` blocks, in sat/vB                                     |
+| <Id rust="fee_rate" ts="getFeeRate" />            | the fee estimate for `target` blocks, in sat/vB, or an error when there is none     |
 | <Id rust="address_history" ts="addressHistory" /> | every transaction paying or spending the address, mempool included, with its height |
 | `outspend`                                        | the transaction spending an output, mempool included, or none                       |
 | `broadcast`                                       | the txid                                                                            |

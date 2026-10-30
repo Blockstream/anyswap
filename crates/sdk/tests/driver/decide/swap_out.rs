@@ -120,26 +120,15 @@ fn send_amount_output_is_not_the_opening() {
     assert_eq!(decision.status, funding(DEADLINE, false));
 }
 
-/// When the hold invoice expires before `funding_timeout`, the deadline is its expiry.
+/// The deadline is the hold invoice's expiry, however far past `funding_timeout`.
 #[test]
-fn hold_invoice_expiry_ends_funding_sooner() {
-    let mut record = swap_out();
-    record.source.invoice = Some(invoice(STARTED_AT, 3_600));
-
-    let decision = run(&record, &observed(vec![]));
-
-    assert_eq!(decision.status, funding(STARTED_AT + 3_600, false));
-}
-
-/// When the hold invoice expires after `funding_timeout`, the deadline is `funding_timeout`.
-#[test]
-fn funding_timeout_ends_funding_before_later_invoice_expiry() {
+fn deadline_is_the_hold_invoice_expiry() {
     let mut record = swap_out();
     record.source.invoice = Some(invoice(STARTED_AT, 200_000));
 
     let decision = run(&record, &observed(vec![]));
 
-    assert_eq!(decision.status, funding(DEADLINE, false));
+    assert_eq!(decision.status, funding(STARTED_AT + 200_000, false));
 }
 
 /// When a keypath spend of the opening reaches `min_confs`, the swap completes with its txid and

@@ -1,0 +1,4 @@
+disallowed-methods = [
+    { path = "anyswap_core::utils::now", reason = "the driver counts deadlines on its Clock" },
+    { path = "std::time::SystemTime::now", reason = "the driver counts deadlines on its Clock" },
+]

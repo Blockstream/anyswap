@@ -55,15 +55,20 @@ use bitcoin::{
     hashes::{Hash, sha256},
     secp256k1::Keypair,
 };
+use futures_util::StreamExt;
 use reqwest::{
     Method,
     header::{CONTENT_TYPE, HeaderMap, HeaderValue},
 };
-use serde::Deserialize;
+use serde::{Deserialize, de::DeserializeOwned};
 use thiserror::Error;
 use uuid::Uuid;
 
 use crate::wallet::{Wallet, WalletError};
+
+/// The largest body read from the server. A full restore page, 100 swaps with
+/// their create requests, is under half a MiB.
+const MAX_RESPONSE_BYTES: usize = 4 << 20;
 
 #[derive(Clone, Debug, Error)]
 pub enum ClientError {
@@ -156,6 +161,8 @@ impl HttpClient {
         let pubkey = keypair.public_key();
         let user_id = sha256::Hash::hash(&pubkey.serialize()).to_string();
         let target = format!("/v1/subscribe/{user_id}");
+        // The server checks the timestamp against its own clock.
+        #[allow(clippy::disallowed_methods)]
         let timestamp = now() as i64;
         let signature = AuthCore::sign_request(
             &AuthRequest {
@@ -183,7 +190,7 @@ impl HttpClient {
             .get(format!("{}/v1/info", self.base_url))
             .send()
             .await?;
-        Ok(check(resp).await?.json().await?)
+        json(check(resp).await?).await
     }
 
     /// Initiates a swap. The server may cancel the swap right after creation;
@@ -229,7 +236,7 @@ impl HttpClient {
             .headers(headers)
             .send()
             .await?;
-        Ok(check(resp).await?.json().await?)
+        json(check(resp).await?).await
     }
 
     /// Fetches the paginated swap history for a user.
@@ -250,7 +257,7 @@ impl HttpClient {
         request.headers_mut().extend(headers);
 
         let resp = self.http.execute(request).await?;
-        Ok(check(resp).await?.json().await?)
+        json(check(resp).await?).await
     }
 
     /// Requests swap cancellation. The outcome is observed via
@@ -320,6 +327,8 @@ impl HttpClient {
         raw_body: &[u8],
         identity_keypair: &Keypair,
     ) -> Result<HeaderMap, ClientError> {
+        // The server checks the timestamp against its own clock.
+        #[allow(clippy::disallowed_methods)]
         let timestamp = now() as i64;
         let pubkey = identity_keypair.public_key();
         let signature = AuthCore::sign_request(
@@ -364,7 +373,7 @@ async fn check(resp: reqwest::Response) -> Result<reqwest::Response, ClientError
         code: Option<String>,
     }
 
-    let (message, code) = match resp.json::<ErrorBody>().await {
+    let (message, code) = match json::<ErrorBody>(resp).await {
         Ok(body) => (body.message, body.code.and_then(|c| c.parse().ok())),
         Err(_) => (
             status
@@ -381,6 +390,25 @@ async fn check(resp: reqwest::Response) -> Result<reqwest::Response, ClientError
     })
 }
 
+/// `resp`'s body as `T`, read up to [`MAX_RESPONSE_BYTES`] so that one answer
+/// cannot exhaust the client's memory. A body that does not parse fails as
+/// transport, as `reqwest`'s own decoding does.
+async fn json<T: DeserializeOwned>(resp: reqwest::Response) -> Result<T, ClientError> {
+    let mut body = Vec::new();
+    let mut chunks = resp.bytes_stream();
+    while let Some(chunk) = chunks.next().await {
+        let chunk = chunk?;
+        if body.len() + chunk.len() > MAX_RESPONSE_BYTES {
+            return Err(ClientError::Transport(format!(
+                "response over {MAX_RESPONSE_BYTES} bytes"
+            )));
+        }
+        body.extend_from_slice(&chunk);
+    }
+    serde_json::from_slice(&body)
+        .map_err(|e| ClientError::Transport(format!("error decoding response body: {e}")))
+}
+
 #[cfg(test)]
 mod tests {
     use std::{
@@ -390,7 +418,10 @@ mod tests {
         time::Duration,
     };
 
-    use anyswap_core::types::{Chain, SwapNetwork};
+    use anyswap_core::{
+        api::Pagination,
+        types::{Chain, SwapNetwork},
+    };
     use bitcoin::{
         hashes::{Hash, sha256},
         secp256k1::{SecretKey, schnorr::Signature},
@@ -633,5 +664,45 @@ mod tests {
 
         assert!(result.is_ok(), "{result:?}");
         server_result.unwrap();
+    }
+
+    #[tokio::test]
+    async fn refuses_a_response_over_the_size_limit() {
+        let page = SwapListResponse {
+            swaps: Vec::new(),
+            pagination: Pagination {
+                total: 0,
+                limit: 100,
+                offset: 0,
+                has_next: false,
+            },
+        };
+        let mut body = serde_json::to_vec(&page).unwrap();
+        body.resize(MAX_RESPONSE_BYTES + 1, b' ');
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            read_request(&mut stream);
+            let head = format!("HTTP/1.1 200 OK\r\ncontent-length: {}\r\n\r\n", body.len());
+            let _ = stream.write_all(head.as_bytes());
+            let _ = stream.write_all(&body);
+        });
+
+        let (wallet, _) = Wallet::generate(SwapNetwork::Regtest).unwrap();
+        let client = HttpClient::new(&base_url, Some(&wallet)).unwrap();
+        let query = SwapListQuery {
+            user_id: "alice".into(),
+            limit: 100,
+            ..SwapListQuery::default()
+        };
+        let result = client.list_swaps(&query).await;
+        server.join().unwrap();
+
+        assert!(
+            matches!(&result, Err(ClientError::Transport(message)) if message.contains("over")),
+            "{result:?}"
+        );
     }
 }

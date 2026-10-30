@@ -35,6 +35,9 @@ pub enum EsploraError {
     #[error("invalid fee rate: {0} sat/vB")]
     InvalidFeeRate(f64),
 
+    #[error("no fee estimate within {0} blocks")]
+    NoFeeEstimate(usize),
+
     #[error("invalid Esplora response: {0}")]
     InvalidResponse(String),
 }

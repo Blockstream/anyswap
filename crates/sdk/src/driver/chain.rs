@@ -28,7 +28,8 @@ pub struct HistoryTx {
 pub trait ChainClient: MaybeSend + MaybeSync {
     async fn height(&self) -> Result<Height, ChainError>;
 
-    /// Estimate for confirmation within `target` blocks, in sat/vB.
+    /// Estimate for confirmation within `target` blocks, in sat/vB, or an
+    /// error when the backend has none.
     async fn fee_rate(&self, target: u32) -> Result<f64, ChainError>;
 
     /// Every transaction paying or spending `address`.

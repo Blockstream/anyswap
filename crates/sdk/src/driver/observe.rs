@@ -137,6 +137,7 @@ pub(crate) fn driven(record: &SwapRecord) -> Result<Terms, DriverError> {
     }
 }
 
+/// The pass's view, with the server's error when it did not answer.
 pub(crate) async fn observe(
     record: &SwapRecord,
     terms: &Terms,
@@ -144,10 +145,11 @@ pub(crate) async fn observe(
     chain: &Registered,
     client: &dyn ServerClient,
     config: &Config,
-) -> Result<Observed, DriverError> {
+    now: Timestamp,
+) -> Result<(Observed, Option<DriverError>), DriverError> {
     let tip = chain.client.height().await?;
     let fee_rate = chain
-        .fee_rate(config.fee_conf_target, config.fee_rate_cache_ttl)
+        .fee_rate(config.fee_conf_target, config.fee_rate_cache_ttl, now)
         .await?;
     let history = chain.client.address_history(&script.address()).await?;
     let txs = history
@@ -218,18 +220,20 @@ pub(crate) async fn observe(
         key(a).cmp(&key(b))
     });
 
-    let server = bounded(config.server_timeout, client.get_swap(record.swap_id))
-        .await
-        .ok()
-        .map(|state| poll(terms, state));
+    let (server, server_error) =
+        match bounded(config.server_timeout, client.get_swap(record.swap_id)).await {
+            Ok(state) => (Some(poll(terms, state)), None),
+            Err(error) => (None, Some(error.into())),
+        };
 
-    Ok(Observed {
-        now: anyswap_core::utils::now(),
+    let observed = Observed {
+        now,
         tip,
         fee_rate,
         outputs,
         server,
-    })
+    };
+    Ok((observed, server_error))
 }
 
 /// The oldest output paying exactly `amount`: earliest block first, the
