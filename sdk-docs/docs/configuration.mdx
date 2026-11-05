@@ -66,7 +66,7 @@ system's, so a test can move time without waiting.
 | <Id rust="max_refund_csv" ts="maxRefundCsv" />    | 1008    | 10080  | The longest CSV accepted on a SwapIn deposit. A swap with a longer one is refused at creation.                                                                                                         |
 | <Id rust="max_fee_rate" ts="maxFeeRate" />        | 100     | 1      | The highest fee rate any spend pays, in sat/vB. A SwapOut holds its preimage while the estimate is above it.                                                                                           |
 | <Id rust="block_time" ts="blockTime" />           | 600 s   | 60 s   | The expected block interval, to compare a block deadline with a clock one.                                                                                                                             |
-| <Id rust="funding_timeout" ts="fundingTimeout" /> | 20 min  | 15 min | From creation, the most a swap with nothing on chain is given. A SwapIn is refused when the server or its invoice would wait less, plus time to confirm; a SwapOut when its hold invoice lasts longer. |
+| <Id rust="funding_timeout" ts="fundingTimeout" /> | 20 min  | 15 min | From creation, the most a swap with nothing on chain is given. A SwapIn is refused when the server would wait less, plus time to confirm; a SwapOut when its hold invoice lasts longer.                |
 
 A chain whose fee estimate cannot be read holds its swaps until it can. On
 regtest, which has no fee estimates, the driver takes the chain's relay minimum

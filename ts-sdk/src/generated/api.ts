@@ -115,7 +115,7 @@ export interface CreateSwapRequest {
   dest_asset_id?: string | null;
   /** swap-out and swap-chain, Liquid only. */
   dest_blinding_pubkey?: string | null;
-  dest_chain?: null | Chain;
+  dest_chain?: Chain | null;
   /** swap-out and swap-chain. */
   dest_claim_pubkey?: string | null;
   /** swap-out and swap-chain: preimage hash for the destination HTLC. */
@@ -131,7 +131,7 @@ export interface CreateSwapRequest {
   source_asset_id?: string | null;
   /** swap-in and swap-chain, Liquid only. */
   source_blinding_pubkey?: string | null;
-  source_chain?: null | Chain;
+  source_chain?: Chain | null;
   /** swap-in and swap-chain. */
   source_refund_pubkey?: string | null;
   /** @format uuid */
@@ -142,7 +142,7 @@ export interface CreateSwapRequest {
   /** swap-in and swap-chain. */
   user_refund_address?: string | null;
   /** Optional webhook for swap status changes. */
-  webhook?: null | WebhookRequest;
+  webhook?: WebhookRequest | null;
 }
 
 /** The body of every `4xx`/`5xx` response. */
@@ -322,7 +322,7 @@ export interface SwapState {
    */
   created_at: number;
   dest_asset?: string | null;
-  dest_chain?: null | Chain;
+  dest_chain?: Chain | null;
   dest_claim_pubkey?: string | null;
   /**
    * @format int32
@@ -349,7 +349,7 @@ export interface SwapState {
   send_amount: string;
   service_fee: string;
   source_asset?: string | null;
-  source_chain?: null | Chain;
+  source_chain?: Chain | null;
   source_claim_privkey?: string | null;
   source_claim_pubkey?: string | null;
   /**

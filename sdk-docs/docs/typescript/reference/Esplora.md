@@ -10,6 +10,10 @@ minimums.
 Optional: both implement [Esplora](#esplora), a structural interface, so anything
 with those methods replaces them.
 
+A read answered 429, 500 or 503 is asked again up to 6 times, waiting from
+256 ms and doubling, and so is a broadcast answered 429, so a rate limit slows
+a pass rather than failing it.
+
 ## Classes
 
 ### BitcoinEsplora
@@ -1006,7 +1010,7 @@ How an Esplora client makes its requests.
 | Property | Type | Description |
 | ------ | ------ | ------ |
 | <a id="property-signal"></a> `signal?` | `AbortSignal` | Aborts every request of this client, beside the timeout, for good once aborted. Aborting is safe at any time, but a swap-out that is `Claiming` needs passes that finish, or the server's CSV refund can take the opening. |
-| <a id="property-timeout"></a> `timeout?` | `number` | Seconds one request may go unanswered before it fails, above zero. Defaults to 30. A `fetch` passed in gets the timeout in `init.signal`, so its own error handling sees the `TimeoutError`. |
+| <a id="property-timeout"></a> `timeout?` | `number` | Seconds each try of a request may go unanswered before it fails, above zero. Defaults to 30. A `fetch` passed in gets the timeout in `init.signal`, so its own error handling sees the `TimeoutError`. |
 
 ***
 

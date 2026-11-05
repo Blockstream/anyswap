@@ -229,8 +229,8 @@ Creates a swap-in against `quote` with the invoice minted for its
 `refundAddress` is signed with the request and paid by any refund; without
 one the [Destinations](#destinations) hook is asked when there is something to take,
 or [SwapHandle.refund](#refund) is called with an address. Refused unless the
-server and the invoice both wait out the chain's `fundingTimeout` and
-`minConfs + 1` blocks more.
+server waits out the chain's `fundingTimeout` and `minConfs + 1` blocks
+more, and the invoice outlasts those blocks.
 
 ###### Parameters
 
@@ -950,7 +950,7 @@ a confirmation, since a timelock on an unconfirmed output has not started.
 | ------ | ------ | ------ |
 | <a id="property-blocktime"></a> `blockTime?` | `number` | Expected block interval in seconds, to compare a block deadline with a wall-clock one. Defaults to 600 on Bitcoin, 60 on Liquid. |
 | <a id="property-claimmargin"></a> `claimMargin?` | `number` | How much CSV must remain when a swap-out's preimage goes out. Defaults to 252 on Bitcoin, 2520 on Liquid. |
-| <a id="property-fundingtimeout"></a> `fundingTimeout?` | `number` | From creation, the most a swap with nothing on chain is given, in seconds. A swap-in asks the server to cancel at it, or at its claim invoice's expiry if sooner, and is refused unless the server and its claim invoice both wait this long and `minConfs + 1` blocks more. A swap-out is refused when its hold invoice outlasts it. Defaults to 1200 on Bitcoin, 900 on Liquid. |
+| <a id="property-fundingtimeout"></a> `fundingTimeout?` | `number` | From creation, the most a swap with nothing on chain is given, in seconds. A swap-in asks the server to cancel at it, or at its claim invoice's expiry if sooner, and is refused unless the server waits this long and `minConfs + 1` blocks more and its claim invoice outlasts those blocks. A swap-out is refused when its hold invoice outlasts it. Defaults to 1200 on Bitcoin, 900 on Liquid. |
 | <a id="property-maxfeerate"></a> `maxFeeRate?` | `number` | The rate no spend goes above, in sat/vB, finite and positive. A swap-out holds its preimage while the estimate is above it. Defaults to 100 on Bitcoin, 1 on Liquid. |
 | <a id="property-maxrefundcsv"></a> `maxRefundCsv?` | `number` | The longest CSV accepted on a swap-in deposit. Defaults to 1008 on Bitcoin, 10080 on Liquid. |
 | <a id="property-minconfs"></a> `minConfs?` | `number` | The depth that releases a swap-out's preimage, and that a spend reaches before it closes a swap. Defaults to 3 on Bitcoin, 2 on Liquid. |

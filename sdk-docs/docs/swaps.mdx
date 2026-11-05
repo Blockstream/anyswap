@@ -71,8 +71,8 @@ console.log(`deposit ${send_amount} to ${await swap.address()}`);
 | Requirement                                                                                                                 | Otherwise                                                           |
 | --------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
 | The invoice is for exactly `receive_amount`                                                                                 | creating the swap fails                                             |
-| The invoice outlives <Id rust="funding_timeout" ts="fundingTimeout" /> and <Id rust="min_confs" ts="minConfs" /> + 1 blocks | creating the swap fails                                             |
-| The quote's `await_opening_tx` is as long                                                                                   | creating the swap fails                                             |
+| The invoice outlives <Id rust="min_confs" ts="minConfs" /> + 1 blocks                                                       | creating the swap fails                                             |
+| The quote's `await_opening_tx` outlives <Id rust="funding_timeout" ts="fundingTimeout" /> by as many blocks                 | creating the swap fails                                             |
 | The user sends `send_amount` to the address as one output                                                                   | the output is a stray, refunded as [Refunds](refunds.mdx) describes |
 
 The refund address is optional: without one, a refund waits for an address

@@ -37,3 +37,5 @@ openapi = ["dep:utoipa"]
 [dev-dependencies]
 bitcoin = { workspace = true, features = ["bitcoinconsensus"] }
 serde_json = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }
+wiremock = "0.6"

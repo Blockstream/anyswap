@@ -369,6 +369,9 @@ impl SwapState {
     }
 }
 
+/// The server keeps this many bytes of a cancel message and drops the rest.
+pub const MAX_CANCEL_MESSAGE_BYTES: usize = 256;
+
 #[derive(Serialize, Deserialize, Debug)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct CancelRequest {

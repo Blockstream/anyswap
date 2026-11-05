@@ -1,7 +1,7 @@
 //! Liquid Esplora client and its chain-neutral [`ChainClient`] adapter.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     str::FromStr,
     sync::{Arc, Mutex, PoisonError},
     time::Duration,
@@ -9,11 +9,13 @@ use std::{
 
 use async_trait::async_trait;
 use elements::{Address, AssetId, BlockHash, Transaction, TxOut, Txid, encode};
+use esplora_client::RETRYABLE_ERROR_CODES;
+use reqwest::{Response, StatusCode};
 use serde::Deserialize;
 
 use super::{
     AddressUtxo, ChainClient, ChainClientError, DEFAULT_TIMEOUT, EsploraError, OutpointSpend,
-    SpendingTx,
+    SpendingTx, retrying,
 };
 use crate::{fee, types::Chain};
 
@@ -60,7 +62,7 @@ impl LiquidEsplora {
         Self::with_timeout(url, DEFAULT_TIMEOUT)
     }
 
-    /// A client whose every request fails once it goes unanswered for
+    /// A client whose every try of a request fails once it goes unanswered for
     /// `timeout`. Panics where `reqwest::Client::new` would: when the TLS
     /// backend cannot start.
     pub fn with_timeout(url: &str, timeout: Duration) -> Self {
@@ -73,6 +75,18 @@ impl LiquidEsplora {
             base_url: url.trim_end_matches('/').to_owned(),
             txs: Arc::default(),
         }
+    }
+
+    /// A read, asked again on the same answers as Bitcoin's.
+    async fn get(&self, url: &str) -> Result<Response, reqwest::Error> {
+        retrying(
+            || self.client.get(url).send(),
+            |result| {
+                matches!(result, Ok(response)
+                    if RETRYABLE_ERROR_CODES.contains(&response.status().as_u16()))
+            },
+        )
+        .await
     }
 
     pub async fn get_fee_rate(&self, target: usize) -> Result<f64, EsploraError> {
@@ -92,6 +106,7 @@ impl LiquidEsplora {
         Ok(estimate.max(min))
     }
 
+    /// Not asked again: `get_fee_rate` takes the relay minimum without an answer.
     async fn fee_estimates(&self) -> Result<HashMap<u16, f64>, EsploraError> {
         Ok(self
             .client
@@ -105,12 +120,8 @@ impl LiquidEsplora {
 
     pub async fn get_tx_confirmations(&self, txid: &Txid) -> Result<Option<u32>, EsploraError> {
         // `/tx/:txid/status` reports an unknown txid as unconfirmed; `/tx/:txid` 404s.
-        let response = self
-            .client
-            .get(format!("{}/tx/{txid}", self.base_url))
-            .send()
-            .await?;
-        if response.status() == reqwest::StatusCode::NOT_FOUND {
+        let response = self.get(&format!("{}/tx/{txid}", self.base_url)).await?;
+        if response.status() == StatusCode::NOT_FOUND {
             return Ok(None);
         }
         let tx = response
@@ -128,11 +139,9 @@ impl LiquidEsplora {
 
     pub async fn get_tx(&self, txid: &Txid) -> Result<Option<Transaction>, EsploraError> {
         let response = self
-            .client
-            .get(format!("{}/tx/{txid}/hex", self.base_url))
-            .send()
+            .get(&format!("{}/tx/{txid}/hex", self.base_url))
             .await?;
-        if response.status() == reqwest::StatusCode::NOT_FOUND {
+        if response.status() == StatusCode::NOT_FOUND {
             return Ok(None);
         }
         let raw = response.error_for_status()?.text().await?;
@@ -145,20 +154,22 @@ impl LiquidEsplora {
 
     pub async fn broadcast(&self, tx: &Transaction) -> Result<Txid, EsploraError> {
         let txid = tx.txid();
-        self.client
-            .post(format!("{}/tx", self.base_url))
-            .body(hex::encode(encode::serialize(tx)))
-            .send()
-            .await?
-            .error_for_status()?;
+        let url = format!("{}/tx", self.base_url);
+        let body = hex::encode(encode::serialize(tx));
+        retrying(
+            || self.client.post(&url).body(body.clone()).send(),
+            |result| {
+                matches!(result, Ok(response) if response.status() == StatusCode::TOO_MANY_REQUESTS)
+            },
+        )
+        .await?
+        .error_for_status()?;
         Ok(txid)
     }
 
     pub async fn get_height(&self) -> Result<u32, EsploraError> {
         let raw = self
-            .client
-            .get(format!("{}/blocks/tip/height", self.base_url))
-            .send()
+            .get(&format!("{}/blocks/tip/height", self.base_url))
             .await?
             .error_for_status()?
             .text()
@@ -171,9 +182,7 @@ impl LiquidEsplora {
     /// Block hash at `height`, as reported by Esplora.
     pub async fn get_block_hash(&self, height: u32) -> Result<BlockHash, EsploraError> {
         let raw = self
-            .client
-            .get(format!("{}/block-height/{height}", self.base_url))
-            .send()
+            .get(&format!("{}/block-height/{height}", self.base_url))
             .await?
             .error_for_status()?
             .text()
@@ -194,11 +203,9 @@ impl LiquidEsplora {
         }
 
         let response = self
-            .client
-            .get(format!("{}/tx/{txid}/outspend/{vout}", self.base_url))
-            .send()
+            .get(&format!("{}/tx/{txid}/outspend/{vout}", self.base_url))
             .await?;
-        if response.status() == reqwest::StatusCode::NOT_FOUND {
+        if response.status() == StatusCode::NOT_FOUND {
             return Ok(None);
         }
         let outspend = response.error_for_status()?.json::<ApiOutspend>().await?;
@@ -220,11 +227,9 @@ impl LiquidEsplora {
         txid: &Txid,
     ) -> Result<Option<ApiTxStatus>, EsploraError> {
         let response = self
-            .client
-            .get(format!("{}/tx/{txid}/status", self.base_url))
-            .send()
+            .get(&format!("{}/tx/{txid}/status", self.base_url))
             .await?;
-        if response.status() == reqwest::StatusCode::NOT_FOUND {
+        if response.status() == StatusCode::NOT_FOUND {
             return Ok(None);
         }
         Ok(Some(response.error_for_status()?.json().await?))
@@ -242,15 +247,17 @@ impl LiquidEsplora {
         }
 
         let utxos = self
-            .client
-            .get(format!("{}/address/{address}/utxo", self.base_url))
-            .send()
+            .get(&format!("{}/address/{address}/utxo", self.base_url))
             .await?
             .error_for_status()?
             .json::<Vec<ApiUtxo>>()
             .await?;
+        // electrs indexes a block before it updates its mempool, and until then
+        // lists a transaction the block confirmed from both.
+        let mut seen = HashSet::new();
         Ok(utxos
             .into_iter()
+            .filter(|u| seen.insert((u.txid, u.vout)))
             .map(|u| LiquidUtxo {
                 txid: u.txid,
                 vout: u.vout,
@@ -306,14 +313,7 @@ impl LiquidEsplora {
                 Some(txid) => format!("{}/address/{address}/txs/chain/{txid}", self.base_url),
                 None => format!("{}/address/{address}/txs", self.base_url),
             };
-            let page: Vec<ApiTx> = self
-                .client
-                .get(path)
-                .send()
-                .await?
-                .error_for_status()?
-                .json()
-                .await?;
+            let page: Vec<ApiTx> = self.get(&path).await?.error_for_status()?.json().await?;
             let confirmed = page.iter().filter(|tx| tx.status.confirmed).count();
             last_seen = page
                 .iter()
@@ -457,7 +457,96 @@ fn convert_fee_rate(target: usize, estimates: HashMap<u16, f64>) -> Option<f64> 
 
 #[cfg(test)]
 mod tests {
+    use elements::{AddressParams, LockTime, Script};
+    use serde_json::json;
+
     use super::*;
+    use crate::esplora::tests::{answering, serving};
+
+    fn tx() -> Transaction {
+        Transaction {
+            version: 2,
+            lock_time: LockTime::ZERO,
+            input: vec![],
+            output: vec![],
+        }
+    }
+
+    #[tokio::test]
+    async fn lists_an_output_reported_by_chain_and_mempool_once() {
+        let address = Address::p2sh(&Script::new(), None, &AddressParams::LIQUID);
+        let txid = tx().txid().to_string();
+        let server = serving(
+            &format!("/address/{address}/utxo"),
+            json!([
+                { "txid": txid, "vout": 0, "value": 101000 },
+                { "txid": txid, "vout": 1, "value": 5000 },
+                { "txid": txid, "vout": 0, "value": 101000 },
+            ]),
+        )
+        .await;
+
+        let utxos = LiquidEsplora::new(&server.uri())
+            .address_utxos(&address)
+            .await
+            .unwrap();
+
+        let vouts: Vec<u32> = utxos.iter().map(|utxo| utxo.vout).collect();
+        assert_eq!(vouts, [0, 1]);
+    }
+
+    #[tokio::test]
+    async fn asks_a_read_again_on_429_500_and_503() {
+        for status in [429, 500, 503] {
+            let server = answering("/blocks/tip/height", &[status, 200]).await;
+
+            let esplora = LiquidEsplora::new(&server.uri());
+
+            assert_eq!(esplora.get_height().await.unwrap(), 7);
+        }
+    }
+
+    #[tokio::test]
+    async fn takes_any_other_answer_to_a_read_at_once() {
+        let txid = tx().txid();
+        let server = answering(&format!("/tx/{txid}/hex"), &[404]).await;
+
+        let esplora = LiquidEsplora::new(&server.uri());
+
+        assert_eq!(esplora.get_tx(&txid).await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn sends_a_broadcast_again_when_rate_limited() {
+        let server = answering("/tx", &[429, 200]).await;
+
+        let esplora = LiquidEsplora::new(&server.uri());
+
+        assert_eq!(esplora.broadcast(&tx()).await.unwrap(), tx().txid());
+    }
+
+    #[tokio::test]
+    async fn does_not_send_a_broadcast_again_on_a_server_error() {
+        for status in [500, 503] {
+            let server = answering("/tx", &[status]).await;
+
+            let esplora = LiquidEsplora::new(&server.uri());
+
+            assert!(esplora.broadcast(&tx()).await.is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn takes_the_relay_minimum_at_once_when_a_fee_read_fails() {
+        let server = answering("/fee-estimates", &[429]).await;
+
+        let esplora = LiquidEsplora::new(&server.uri());
+
+        assert_eq!(
+            esplora.get_fee_rate(3).await.unwrap(),
+            fee::min_fee_rate(Chain::Liquid)
+        );
+    }
 
     #[test]
     fn fee_estimate_uses_largest_target_not_exceeding_request() {

@@ -1,5 +1,24 @@
 # Changelog
 
+## [1.10.0]
+
+- `LiquidEsplora` asks again when a read is answered 429, 500 or 503, and both
+  `LiquidEsplora` and `BitcoinEsplora` when a broadcast is answered 429: up to 6
+  times, waiting from 256 ms and doubling. A driver over a rate limit slows down
+  instead of failing its swaps and broadcasts.
+- `swap_in` accepts a claim invoice shorter than the chain's `funding_timeout`
+  and `min_confs + 1` blocks. It only has to outlast those blocks, and a
+  shorter one brings `expires_at` forward.
+
+### Minor
+
+- The `openapi` feature of `anyswap-core` implements `utoipa` 6's traits, where it
+  implemented `utoipa` 5's.
+- `MAX_AUTH_BODY_BYTES` is 8 KiB, and the new `MAX_CANCEL_MESSAGE_BYTES` says
+  how much of a cancel message the server keeps.
+- `address_utxos` on `BitcoinEsplora` and `LiquidEsplora` lists each output once,
+  including one Esplora reports from both the chain and its mempool.
+
 ## [1.9.0]
 
 - **Breaking:** `BitcoinEsplora::get_fee_rate` fails when the indexer has no

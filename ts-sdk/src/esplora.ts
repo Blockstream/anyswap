@@ -11,6 +11,10 @@
  * Optional: both implement {@link Esplora}, a structural interface, so anything
  * with those methods replaces them.
  *
+ * A read answered 429, 500 or 503 is asked again up to 6 times, waiting from
+ * 256 ms and doubling, and so is a broadcast answered 429, so a rate limit slows
+ * a pass rather than failing it.
+ *
  * @packageDocumentation
  * @module Esplora
  */
@@ -93,9 +97,9 @@ export interface Esplora {
 /** How an Esplora client makes its requests. */
 export interface EsploraOptions {
   /**
-   * Seconds one request may go unanswered before it fails, above zero.
-   * Defaults to 30. A `fetch` passed in gets the timeout in `init.signal`, so
-   * its own error handling sees the `TimeoutError`.
+   * Seconds each try of a request may go unanswered before it fails, above
+   * zero. Defaults to 30. A `fetch` passed in gets the timeout in `init.signal`,
+   * so its own error handling sees the `TimeoutError`.
    */
   timeout?: number;
   /**
@@ -104,6 +108,28 @@ export interface EsploraOptions {
    * needs passes that finish, or the server's CSV refund can take the opening.
    */
   signal?: AbortSignal;
+}
+
+const MAX_RETRIES = 6;
+const BASE_BACKOFF_MS = 256;
+const READ_RETRY_STATUSES: readonly number[] = [429, 500, 503];
+/** A rate limit turns a broadcast away unread; a 500 or 503 may be its answer. */
+const BROADCAST_RETRY_STATUSES: readonly number[] = [429];
+
+/** Waits `ms`, or rejects with the reason as soon as `signal` aborts. */
+function backoff(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const abort = () => {
+      clearTimeout(timer);
+      reject(signal?.reason);
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", abort);
+      resolve();
+    }, ms);
+    if (signal?.aborted) abort();
+    else signal?.addEventListener("abort", abort, { once: true });
+  });
 }
 
 /**
@@ -139,13 +165,28 @@ abstract class EsploraBase implements Esplora {
     if (!(seconds > 0)) {
       throw new RangeError(`timeout must be above zero, got ${seconds}`);
     }
-    this.fetchFn = (input, init) => {
+    this.fetchFn = async (input, init) => {
       const signals = [init?.signal, options.signal].filter(
         (signal): signal is AbortSignal => signal != null,
       );
-      signals.push(AbortSignal.timeout(seconds * 1000));
-      const signal = signals.length > 1 ? AbortSignal.any(signals) : signals[0];
-      return fetchFn(input, { ...init, signal });
+      const aborted =
+        signals.length > 1 ? AbortSignal.any(signals) : signals[0];
+      const send = () => {
+        const timeout = AbortSignal.timeout(seconds * 1000);
+        const signal = aborted ? AbortSignal.any([aborted, timeout]) : timeout;
+        return fetchFn(input, { ...init, signal });
+      };
+      const retryable =
+        init?.method === "POST"
+          ? BROADCAST_RETRY_STATUSES
+          : READ_RETRY_STATUSES;
+      let res = await send();
+      for (let i = 0; i < MAX_RETRIES && retryable.includes(res.status); i++) {
+        await res.body?.cancel();
+        await backoff(BASE_BACKOFF_MS * 2 ** i, aborted);
+        res = await send();
+      }
+      return res;
     };
   }
 

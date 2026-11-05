@@ -294,9 +294,9 @@ impl<W: SwapWallet + MaybeSend + MaybeSync + 'static> Driver<W> {
     /// `receive_amount`. The handle carries where and how much to deposit.
     /// A `refund_address` is signed with the request and paid by any refund;
     /// without one the destinations hook is asked when there is something to
-    /// take, or `refund` is called with one. Refused unless the server and the
-    /// invoice both wait out the chain's `funding_timeout` and
-    /// `min_confs + 1` blocks more.
+    /// take, or `refund` is called with one. Refused unless the server waits
+    /// out the chain's `funding_timeout` and `min_confs + 1` blocks more, and
+    /// the invoice outlasts those blocks.
     pub async fn swap_in(
         &self,
         quote: Quote,
@@ -326,9 +326,9 @@ impl<W: SwapWallet + MaybeSend + MaybeSync + 'static> Driver<W> {
         let left = invoice::expiry_at(&claim_invoice)
             .map_err(|e| Refusal::Invoice(e.to_string()))?
             .saturating_sub(self.clock.now());
-        if left < funding_timeout + confirm {
+        if left <= confirm {
             return Err(Refusal::Invoice(format!(
-                "expires in {left} s, before funding timeout {funding_timeout} s and {confirm} s to confirm"
+                "expires in {left} s, within the {confirm} s a deposit takes to confirm"
             ))
             .into());
         }

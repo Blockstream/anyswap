@@ -164,8 +164,8 @@ impl Driver {
 
     /// Creates a SwapIn against `quote` with the invoice minted for its
     /// `receive_amount`. The handle carries where and how much to deposit.
-    /// Refused unless the server and the invoice both wait out the chain's
-    /// `fundingTimeout` and `minConfs + 1` blocks more.
+    /// Refused unless the server waits out the chain's `fundingTimeout` and
+    /// `minConfs + 1` blocks more, and the invoice outlasts those blocks.
     #[wasm_bindgen(js_name = swapIn)]
     pub async fn swap_in(
         &self,

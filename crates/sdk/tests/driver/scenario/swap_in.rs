@@ -181,6 +181,34 @@ async fn refuses_a_funding_timeout_the_server_does_not_wait_out() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn brings_the_deadline_forward_for_an_invoice_shorter_than_the_funding_timeout() {
+    let world = World::bitcoin();
+    let started = world.now();
+
+    let swap = world.try_swap_in(100_000, 3_000).await.unwrap();
+
+    assert_eq!(
+        swap.status().await.unwrap(),
+        Status::Funding {
+            expires_at: started + 600,
+            cancel_sent: false,
+        }
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn refuses_an_invoice_that_ends_before_a_deposit_can_confirm() {
+    let world = World::bitcoin();
+
+    let refused = world.try_swap_in(100_000, 2_400).await;
+
+    assert!(matches!(
+        refused,
+        Err(DriverError::Refused(Refusal::Invoice(_)))
+    ));
+}
+
+#[tokio::test(start_paused = true)]
 async fn cancels_at_its_deadline_on_the_driver_clock() {
     let world = World::bitcoin();
     let swap = world.swap_in(100_000).await;

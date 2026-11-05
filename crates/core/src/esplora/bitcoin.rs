@@ -5,7 +5,7 @@
 //! to all esplora API methods; [`BitcoinChainClient`] wraps it to satisfy the
 //! chain-neutral [`ChainClient`] trait.
 
-use std::{str::FromStr, time::Duration};
+use std::{collections::HashSet, str::FromStr, time::Duration};
 
 use async_trait::async_trait;
 use bitcoin::{Address, Transaction, Txid};
@@ -13,7 +13,7 @@ use esplora_client::r#async::AsyncClient;
 
 use super::{
     AddressUtxo, ChainClient, ChainClientError, DEFAULT_TIMEOUT, EsploraError, EsploraUtxo,
-    OutpointSpend, Outspend, SpendingTx,
+    MAX_RETRIES, OutpointSpend, Outspend, SpendingTx, retrying,
 };
 use crate::{
     fee,
@@ -40,11 +40,12 @@ impl BitcoinEsplora {
         Self::with_timeout(url, DEFAULT_TIMEOUT)
     }
 
-    /// A client whose every request fails once it goes unanswered for
+    /// A client whose every try of a request fails once it goes unanswered for
     /// `timeout`, counted in whole seconds.
     pub fn with_timeout(url: &str, timeout: Duration) -> Result<Self, EsploraError> {
         let client = esplora_client::Builder::new(url)
             .timeout(timeout.as_secs())
+            .max_retries(MAX_RETRIES)
             .build_async()?;
         Ok(Self(client))
     }
@@ -81,7 +82,16 @@ impl BitcoinEsplora {
 
     pub async fn broadcast(&self, tx: &Transaction) -> Result<Txid, EsploraError> {
         let txid = tx.compute_txid();
-        self.0.broadcast(tx).await?;
+        retrying(
+            || self.0.broadcast(tx),
+            |result| {
+                matches!(
+                    result,
+                    Err(esplora_client::Error::HttpResponse { status: 429, .. })
+                )
+            },
+        )
+        .await?;
         Ok(txid)
     }
 
@@ -111,13 +121,18 @@ impl BitcoinEsplora {
         Ok(status.block_height.filter(|_| status.confirmed))
     }
 
-    /// The address's full current UTXO set (confirmed and mempool). Unlike the
-    /// tx-history endpoint there is no newest-N page cap, so a deposit can never
-    /// be hidden behind unrelated transactions to the same address.
+    /// The address's full current UTXO set (confirmed and mempool), each output
+    /// once. Unlike the tx-history endpoint there is no newest-N page cap, so a
+    /// deposit can never be hidden behind unrelated transactions to the same
+    /// address.
     pub async fn address_utxos(&self, address: &Address) -> Result<Vec<EsploraUtxo>, EsploraError> {
         let utxos = self.0.get_address_utxos(address).await?;
+        // electrs indexes a block before it updates its mempool, and until then
+        // lists a transaction the block confirmed from both.
+        let mut seen = HashSet::new();
         Ok(utxos
             .into_iter()
+            .filter(|u| seen.insert((u.txid, u.vout)))
             .map(|u| EsploraUtxo {
                 txid: u.txid,
                 vout: u.vout,
@@ -257,4 +272,83 @@ fn parse_address(address: &str) -> Result<Address, ChainClientError> {
     Ok(Address::from_str(address)
         .map_err(|e| ChainClientError::Other(anyhow::anyhow!("invalid address {address}: {e}")))?
         .assume_checked())
+}
+
+#[cfg(test)]
+mod tests {
+    use bitcoin::{absolute::LockTime, transaction::Version};
+    use serde_json::json;
+
+    use super::*;
+    use crate::esplora::tests::{answering, serving};
+
+    fn tx() -> Transaction {
+        Transaction {
+            version: Version::TWO,
+            lock_time: LockTime::ZERO,
+            input: vec![],
+            output: vec![],
+        }
+    }
+
+    #[tokio::test]
+    async fn lists_an_output_reported_by_chain_and_mempool_once() {
+        let address = Address::from_str("bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4")
+            .unwrap()
+            .assume_checked();
+        let txid = "f3aa4b63d7efaab2d562b896d2dffb835ceb8eb4bd7f3a2605fe99152217b3bf";
+        let confirmed = json!({
+            "confirmed": true,
+            "block_height": 114,
+            "block_hash": "544d75543fd180e4f1f96c5c4c3d86b3b0df1c8609f968daf1c20dd78b3f7012",
+            "block_time": 1793893214,
+        });
+        let server = serving(
+            &format!("/address/{address}/utxo"),
+            json!([
+                { "txid": txid, "vout": 0, "status": confirmed, "value": 101000 },
+                { "txid": txid, "vout": 1, "status": confirmed, "value": 5000 },
+                { "txid": txid, "vout": 0, "status": { "confirmed": false }, "value": 101000 },
+            ]),
+        )
+        .await;
+
+        let utxos = BitcoinEsplora::new(&server.uri())
+            .unwrap()
+            .address_utxos(&address)
+            .await
+            .unwrap();
+
+        let vouts: Vec<u32> = utxos.iter().map(|utxo| utxo.vout).collect();
+        assert_eq!(vouts, [0, 1]);
+    }
+
+    #[tokio::test]
+    async fn asks_again_when_a_read_is_rate_limited() {
+        let server = answering("/blocks/tip/height", &[429, 200]).await;
+
+        let esplora = BitcoinEsplora::new(&server.uri()).unwrap();
+
+        assert_eq!(esplora.get_height().await.unwrap(), 7);
+    }
+
+    #[tokio::test]
+    async fn sends_a_broadcast_again_when_rate_limited() {
+        let server = answering("/tx", &[429, 200]).await;
+
+        let esplora = BitcoinEsplora::new(&server.uri()).unwrap();
+
+        assert_eq!(esplora.broadcast(&tx()).await.unwrap(), tx().compute_txid());
+    }
+
+    #[tokio::test]
+    async fn does_not_send_a_broadcast_again_on_a_server_error() {
+        for status in [500, 503] {
+            let server = answering("/tx", &[status]).await;
+
+            let esplora = BitcoinEsplora::new(&server.uri()).unwrap();
+
+            assert!(esplora.broadcast(&tx()).await.is_err());
+        }
+    }
 }

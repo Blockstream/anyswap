@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.10.0]
+
+- `BitcoinEsplora` and `LiquidEsplora` ask again when a read is answered 429, 500
+  or 503, or a broadcast 429: up to 6 times, waiting from 256 ms and doubling. A
+  driver over a rate limit slows down instead of failing the swaps at the end of
+  its list.
+- `swapIn` accepts a claim invoice shorter than the chain's `fundingTimeout`
+  and `minConfs + 1` blocks. It only has to outlast those blocks, and a
+  shorter one brings `expires_at` forward.
+
 ## [1.9.0]
 
 - **Breaking:** `BitcoinEsplora.getFeeRate` throws when the indexer has no

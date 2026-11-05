@@ -322,10 +322,10 @@ export interface ChainConfig {
   /**
    * From creation, the most a swap with nothing on chain is given, in seconds.
    * A swap-in asks the server to cancel at it, or at its claim invoice's
-   * expiry if sooner, and is refused unless the server and its claim invoice
-   * both wait this long and `minConfs + 1` blocks more. A swap-out is refused
-   * when its hold invoice outlasts it. Defaults to 1200 on Bitcoin, 900 on
-   * Liquid.
+   * expiry if sooner, and is refused unless the server waits this long and
+   * `minConfs + 1` blocks more and its claim invoice outlasts those blocks. A
+   * swap-out is refused when its hold invoice outlasts it. Defaults to 1200 on
+   * Bitcoin, 900 on Liquid.
    */
   fundingTimeout?: number;
 }
@@ -524,8 +524,8 @@ export class Driver {
    * `refundAddress` is signed with the request and paid by any refund; without
    * one the {@link Destinations} hook is asked when there is something to take,
    * or {@link SwapHandle.refund} is called with an address. Refused unless the
-   * server and the invoice both wait out the chain's `fundingTimeout` and
-   * `minConfs + 1` blocks more.
+   * server waits out the chain's `fundingTimeout` and `minConfs + 1` blocks
+   * more, and the invoice outlasts those blocks.
    */
   swapIn(
     quote: Quote,

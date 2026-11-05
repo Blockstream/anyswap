@@ -21,7 +21,9 @@ same. This page lists what differs.
 | Native | `run` is a future for tokio: `tokio::spawn(driver.run())`.                                                                                                         |
 | wasm32 | Interfaces carry no `Send` or `Sync` bounds, so an implementation is `#[async_trait(?Send)]`. `anyswap_sdk::driver::spawn` runs `run` on the browser's event loop. |
 
-Esplora requests time out after 30 seconds; `with_timeout` sets another.
+Esplora requests time out after 30 seconds; `with_timeout` sets another. Esplora
+asks again when a read is answered 429, 500 or 503, or a broadcast 429: up to 6
+times, waiting from 256 ms and doubling. The timeout applies to each try.
 
 The script, transaction builders and typed swap views the driver runs on are
 public, in `script`, `transaction`, `swap_in` and `swap_out`, for a port or an
@@ -41,6 +43,9 @@ audit.
 
 Aborting Esplora is safe at any time, but a SwapOut in `Claiming` needs the
 driver running until its claim confirms.
+
+Esplora asks again when a read is answered 429, 500 or 503, or a broadcast 429:
+up to 6 times, waiting from 256 ms and doubling. The timeout applies to each try.
 
 ## Browsers
 

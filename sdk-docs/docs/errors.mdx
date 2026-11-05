@@ -31,7 +31,7 @@ Branch on the code, never on the HTTP status or the message.
 | `TooManyConnections`    | 429    | Too many WebSocket subscriptions for this wallet.                                  |
 | `Internal`              | 500    | A fault on the server.                                                             |
 | `NotImplemented`        | 501    | A swap type the server does not serve.                                             |
-| `Unavailable`           | 503    | A backend the server needs is down. Retry later.                                   |
+| `Unavailable`           | 503    | A backend the server needs is down, or it takes no new swaps for now. Retry later. |
 
 The driver's own errors:
 

@@ -332,8 +332,8 @@ components:
           description: swap-out and swap-chain, Liquid only.
         dest_chain:
           oneOf:
-          - type: 'null'
           - $ref: '#/components/schemas/Chain'
+          - type: 'null'
         dest_claim_pubkey:
           type:
           - string
@@ -367,8 +367,8 @@ components:
           description: swap-in and swap-chain, Liquid only.
         source_chain:
           oneOf:
-          - type: 'null'
           - $ref: '#/components/schemas/Chain'
+          - type: 'null'
         source_refund_pubkey:
           type:
           - string
@@ -391,9 +391,9 @@ components:
           description: swap-in and swap-chain.
         webhook:
           oneOf:
-          - type: 'null'
           - $ref: '#/components/schemas/WebhookRequest'
             description: Optional webhook for swap status changes.
+          - type: 'null'
     ErrorCode:
       type: string
       description: |-
@@ -708,8 +708,8 @@ components:
           - 'null'
         dest_chain:
           oneOf:
-          - type: 'null'
           - $ref: '#/components/schemas/Chain'
+          - type: 'null'
         dest_claim_pubkey:
           type:
           - string
@@ -772,8 +772,8 @@ components:
           - 'null'
         source_chain:
           oneOf:
-          - type: 'null'
           - $ref: '#/components/schemas/Chain'
+          - type: 'null'
         source_claim_privkey:
           type:
           - string

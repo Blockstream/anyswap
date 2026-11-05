@@ -189,9 +189,9 @@ impl ChainConfig {
 
     /// Seconds from `started_at`: the most a swap with nothing on chain is
     /// given. A swap-in closes at it, or its claim invoice's expiry if sooner,
-    /// and is refused unless the server and its claim invoice both wait this
-    /// long and `minConfs + 1` blocks more. A swap-out is refused when its
-    /// hold invoice outlasts it.
+    /// and is refused unless the server waits this long and `minConfs + 1`
+    /// blocks more and its claim invoice outlasts those blocks. A swap-out is
+    /// refused when its hold invoice outlasts it.
     #[wasm_bindgen(getter, js_name = fundingTimeout)]
     pub fn funding_timeout(&self) -> u64 {
         self.inner.funding_timeout.as_secs()

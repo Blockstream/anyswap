@@ -57,9 +57,10 @@ pub struct ChainConfig {
     pub block_time: u64,
     /// From `started_at`: the most a swap with nothing on chain is given. A
     /// SwapIn closes at it, or sooner as its claim invoice expires, and is
-    /// refused unless the server and its claim invoice both wait this long and
-    /// `min_confs + 1` blocks more, so a deposit made in time confirms before
-    /// either gives up. A SwapOut is refused when its hold invoice outlasts it.
+    /// refused unless the server waits this long and `min_confs + 1` blocks
+    /// more and its claim invoice outlasts those blocks, so a deposit made in
+    /// time confirms before either gives up. A SwapOut is refused when its hold
+    /// invoice outlasts it.
     pub funding_timeout: Duration,
 }
 

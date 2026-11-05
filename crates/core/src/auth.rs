@@ -12,7 +12,8 @@ use crate::utils::now;
 pub const IDENTITY_PUBKEY_HEADER: &str = "x-anyswap-identity-pubkey";
 pub const TIMESTAMP_HEADER: &str = "x-anyswap-timestamp";
 pub const SIGNATURE_HEADER: &str = "x-anyswap-signature";
-pub const MAX_AUTH_BODY_BYTES: usize = 1024 * 1024;
+/// Bounds every signed body, and so the create request each swap stores.
+pub const MAX_AUTH_BODY_BYTES: usize = 8 * 1024;
 
 /// Domain separation tag for the request digest. Bump the version suffix on any
 /// change to the signed fields, their order, or their encoding.
