@@ -122,7 +122,7 @@ user for backup.
 function networkFromInvoice(bolt11: string): string;
 ```
 
-Extracts the network string from a BOLT11 invoice (e.g. `"Regtest"`).
+Extracts the network string from a BOLT11 invoice (e.g. `"regtest"`).
 
 #### Parameters
 

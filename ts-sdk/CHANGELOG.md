@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.10.1]
+
+No changes.
+
 ## [1.10.0]
 
 - `BitcoinEsplora` and `LiquidEsplora` ask again when a read is answered 429, 500

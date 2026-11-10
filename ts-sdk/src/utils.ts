@@ -48,7 +48,7 @@ export function expiryAtFromInvoice(bolt11: string): number {
   return getWasm().expiryAtFromInvoice(bolt11);
 }
 
-/** Extracts the network string from a BOLT11 invoice (e.g. `"Regtest"`). */
+/** Extracts the network string from a BOLT11 invoice (e.g. `"regtest"`). */
 export function networkFromInvoice(bolt11: string): string {
   return getWasm().networkFromInvoice(bolt11);
 }

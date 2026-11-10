@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.10.1]
+
+No changes.
+
 ## [1.10.0]
 
 - `LiquidEsplora` asks again when a read is answered 429, 500 or 503, and both
