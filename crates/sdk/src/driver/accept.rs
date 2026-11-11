@@ -7,7 +7,7 @@ use anyswap_core::{
     PROTOCOL_VERSION,
     api::{CreateSwapRequest, InfoResponse, MAX_SWAP_LIST_LIMIT, SwapListQuery, SwapState},
     auth::{AuthCore, AuthRequest},
-    fee, invoice,
+    fee, invoice, protocol_compatible,
     types::{
         Chain, NATIVE_ASSET, SwapInStatus as InStage, SwapNetwork, SwapOutStatus as OutStage,
         SwapType,
@@ -89,7 +89,7 @@ pub(crate) fn quote(
         }
         .into());
     }
-    if info.policy.protocol_version != PROTOCOL_VERSION {
+    if !protocol_compatible(&info.policy.protocol_version) {
         return Err(Refusal::ProtocolVersion {
             expected: PROTOCOL_VERSION.into(),
             found: info.policy.protocol_version,

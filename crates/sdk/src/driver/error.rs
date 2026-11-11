@@ -99,6 +99,8 @@ pub enum Refusal {
         found: SwapNetwork,
     },
 
+    /// The server speaks another protocol: its major and minor version differ
+    /// from `expected`'s.
     #[error("protocol version {found}, asked {expected}")]
     ProtocolVersion { expected: String, found: String },
 

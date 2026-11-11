@@ -28,7 +28,7 @@ checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
 name = "anyswap-core"
-version = "1.10.1"
+version = "1.11.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -54,7 +54,7 @@ dependencies = [
 
 [[package]]
 name = "anyswap-sdk"
-version = "1.10.1"
+version = "1.11.0"
 dependencies = [
  "anyhow",
  "anyswap-core",
@@ -83,7 +83,7 @@ dependencies = [
 
 [[package]]
 name = "anyswap-wasm"
-version = "1.10.1"
+version = "1.11.0"
 dependencies = [
  "anyswap-sdk",
  "async-trait",

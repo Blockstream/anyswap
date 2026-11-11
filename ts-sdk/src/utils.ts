@@ -62,10 +62,10 @@ export function newSwapId(): string {
 }
 
 /**
- * The protocol version this SDK speaks: the release's major and minor version.
- * Pass as `protocol_version` to
+ * The protocol version this SDK speaks: the release's version, of which only the
+ * major and minor version must match the server's. Pass as `protocol_version` to
  * {@link Api!AnySwapClient.createSwap | AnySwapClient.createSwap}; a server on
- * another version refuses the swap.
+ * another minor version refuses the swap.
  */
 export function protocolVersion(): string {
   return getWasm().protocolVersion();

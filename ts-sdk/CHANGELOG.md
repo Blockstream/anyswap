@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.11.0]
+
+- **Breaking:** `protocolVersion()` returns the full version, and the driver
+  accepts a server on any patch of its minor version. A server before 1.10.2
+  refuses this SDK's swaps, and an SDK before 1.10.2 refuses a 1.10.2 server.
+
 ## [1.10.1]
 
 No changes.

@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.11.0]
+
+- **Breaking:** `PROTOCOL_VERSION` is the full version, and the driver accepts
+  a server on any patch of its minor version. A server before 1.10.2 refuses
+  this driver's swaps, and a driver before 1.10.2 refuses a 1.10.2 server.
+
 ## [1.10.1]
 
 No changes.

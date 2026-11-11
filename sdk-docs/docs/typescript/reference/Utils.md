@@ -177,10 +177,10 @@ Extracts the payment hash from a BOLT11 invoice, as hex.
 function protocolVersion(): string;
 ```
 
-The protocol version this SDK speaks: the release's major and minor version.
-Pass as `protocol_version` to
+The protocol version this SDK speaks: the release's version, of which only the
+major and minor version must match the server's. Pass as `protocol_version` to
 [AnySwapClient.createSwap](Api.md#createswap); a server on
-another version refuses the swap.
+another minor version refuses the swap.
 
 #### Returns
 
