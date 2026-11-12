@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.12.0]
+
+- **Breaking:** `withChain` throws for a `minConfs` of 0.
+
 ## [1.11.0]
 
 - **Breaking:** `protocolVersion()` returns the full version, and the driver

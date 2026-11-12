@@ -64,9 +64,10 @@ addressHistory(address: string): Promise<HistoryTx[]>;
 Every transaction paying or spending `address`, mempool included, with its
 raw hex and confirming height. Pages through the whole history, so a
 deposit can never hide behind unrelated transactions; a transaction the
-indexer has dropped since listing it is left out. Bodies are fetched one
-at a time and kept as each arrives, so a later read fetches only what it
-has not seen, and one that fails partway leaves the next less to fetch.
+indexer has dropped since listing it is left out. Confirmed bodies are
+fetched one at a time and kept as each arrives, so a later read fetches
+only new ones, and one that fails partway leaves the next less to fetch.
+An unconfirmed body is fetched on every read.
 
 ###### Parameters
 
@@ -433,9 +434,10 @@ addressHistory(address: string): Promise<HistoryTx[]>;
 Every transaction paying or spending `address`, mempool included, with its
 raw hex and confirming height. Pages through the whole history, so a
 deposit can never hide behind unrelated transactions; a transaction the
-indexer has dropped since listing it is left out. Bodies are fetched one
-at a time and kept as each arrives, so a later read fetches only what it
-has not seen, and one that fails partway leaves the next less to fetch.
+indexer has dropped since listing it is left out. Confirmed bodies are
+fetched one at a time and kept as each arrives, so a later read fetches
+only new ones, and one that fails partway leaves the next less to fetch.
+An unconfirmed body is fetched on every read.
 
 ###### Parameters
 

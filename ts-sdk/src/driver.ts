@@ -301,7 +301,8 @@ export interface DriverConfig {
 export interface ChainConfig {
   /**
    * The depth that releases a swap-out's preimage, and that a spend reaches
-   * before it closes a swap. Defaults to 3 on Bitcoin, 2 on Liquid.
+   * before it closes a swap, at least 1. Defaults to 3 on Bitcoin, 2 on
+   * Liquid.
    */
   minConfs?: number;
   /** How much CSV must remain when a swap-out's preimage goes out. Defaults to 252 on Bitcoin, 2520 on Liquid. */
@@ -459,8 +460,8 @@ export class Driver {
   /**
    * Registers a chain with its client, under the chain's default policy with
    * `config` applied over it; a chain without one cannot be swapped on.
-   * Throws an `Invalid` {@link DriverError} for a `maxFeeRate` that is not
-   * finite and positive.
+   * Throws an `Invalid` {@link DriverError} for a `minConfs` of 0, or a
+   * `maxFeeRate` that is not finite and positive.
    */
   withChain(chain: Chain, client: ChainClient, config?: ChainConfig): this {
     this.inner = sync(() =>

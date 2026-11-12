@@ -211,6 +211,12 @@ impl<W: SwapWallet + MaybeSend + MaybeSync + 'static> Driver<W> {
         client: impl ChainClient + 'static,
         config: ChainConfig,
     ) -> Result<Self, DriverError> {
+        if config.min_confs == 0 {
+            return Err(DriverError::InvalidChainConfig(
+                chain,
+                "min_confs must be at least 1",
+            ));
+        }
         if !(config.max_fee_rate.is_finite() && config.max_fee_rate > 0.0) {
             return Err(DriverError::InvalidChainConfig(
                 chain,

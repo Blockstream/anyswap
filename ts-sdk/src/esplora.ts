@@ -140,8 +140,9 @@ abstract class EsploraBase implements Esplora {
   private readonly baseUrl: string;
   private readonly fetchFn: typeof fetch;
   /**
-   * Bodies the driver's reads already fetched, by txid. A body never changes
-   * under its txid, so a read fetches only what it has not seen.
+   * Confirmed bodies the driver's reads already fetched, by txid. An
+   * unconfirmed body can change under its txid, which leaves out the witness,
+   * so it is fetched on every read.
    */
   private readonly txs = new Map<string, string>();
 
@@ -322,9 +323,10 @@ abstract class EsploraBase implements Esplora {
    * Every transaction paying or spending `address`, mempool included, with its
    * raw hex and confirming height. Pages through the whole history, so a
    * deposit can never hide behind unrelated transactions; a transaction the
-   * indexer has dropped since listing it is left out. Bodies are fetched one
-   * at a time and kept as each arrives, so a later read fetches only what it
-   * has not seen, and one that fails partway leaves the next less to fetch.
+   * indexer has dropped since listing it is left out. Confirmed bodies are
+   * fetched one at a time and kept as each arrives, so a later read fetches
+   * only new ones, and one that fails partway leaves the next less to fetch.
+   * An unconfirmed body is fetched on every read.
    */
   async addressHistory(address: string): Promise<HistoryTx[]> {
     const txs: EsploraTx[] = [];
@@ -338,10 +340,9 @@ abstract class EsploraBase implements Esplora {
     }
     const history: HistoryTx[] = [];
     for (const tx of txs) {
-      const hex = await this.knownTx(tx.txid);
-      if (hex !== null) {
-        history.push({ hex, height: tx.status.block_height ?? null });
-      }
+      const height = tx.status.block_height ?? null;
+      const hex = await this.knownTx(tx.txid, height !== null);
+      if (hex !== null) history.push({ hex, height });
     }
     return history;
   }
@@ -356,17 +357,21 @@ abstract class EsploraBase implements Esplora {
   async outspend(txid: string, vout: number): Promise<HistoryTx | undefined> {
     const spend = await this.getOutspend(txid, vout);
     if (!spend.spent || !spend.txid) return undefined;
-    const hex = await this.knownTx(spend.txid);
+    const height = spend.status?.block_height ?? null;
+    const hex = await this.knownTx(spend.txid, height !== null);
     if (hex === null) return undefined;
-    return { hex, height: spend.status?.block_height ?? null };
+    return { hex, height };
   }
 
-  /** {@link getTx} through the driver's cache of bodies. */
-  private async knownTx(txid: string): Promise<string | null> {
-    const known = this.txs.get(txid);
+  /** {@link getTx} through the driver's cache, which keeps confirmed bodies. */
+  private async knownTx(
+    txid: string,
+    confirmed: boolean,
+  ): Promise<string | null> {
+    const known = confirmed ? this.txs.get(txid) : undefined;
     if (known !== undefined) return known;
     const hex = await this.getTx(txid);
-    if (hex !== null) this.txs.set(txid, hex);
+    if (confirmed && hex !== null) this.txs.set(txid, hex);
     return hex;
   }
 }

@@ -22,7 +22,9 @@ pub struct HistoryTx {
 /// and interprets it itself, so an implementation fetches bytes by a fixed
 /// recipe and never decides anything. It also bounds each of its own requests:
 /// the driver waits on a call for as long as it takes, since a history read
-/// may need many requests.
+/// may need many requests. It may keep a body by txid only once the body is
+/// confirmed: a txid leaves out the witness, so an unconfirmed body can differ
+/// from the one a block confirms.
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 pub trait ChainClient: MaybeSend + MaybeSync {

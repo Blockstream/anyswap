@@ -43,7 +43,7 @@ impl Default for Config {
 #[derive(Clone, Copy, Debug)]
 pub struct ChainConfig {
     /// The depth that opens the SwapOut release gate, and the depth a spend
-    /// reaches before it closes a swap.
+    /// reaches before it closes a swap. At least 1.
     pub min_confs: u32,
     /// How much CSV must remain when the preimage goes out.
     pub claim_margin: u32,

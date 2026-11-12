@@ -169,7 +169,7 @@ describe("the wasm driver's interfaces", () => {
     expect(await esplora.outspend("a", 3)).toBeUndefined();
   });
 
-  it("addressHistory fetches each body once, and outspend reuses them", async () => {
+  it("addressHistory keeps only confirmed bodies, and outspend reuses them", async () => {
     let listed: EsploraTx[] = [
       { txid: "a", status: { confirmed: true, block_height: 101 } },
     ];
@@ -177,7 +177,11 @@ describe("the wasm driver's interfaces", () => {
       const url = String(input);
       if (url.endsWith("/address/addr/txs")) return json(listed);
       if (url.endsWith("/tx/a/outspend/0"))
-        return json({ spent: true, txid: "b", status: { confirmed: false } });
+        return json({
+          spent: true,
+          txid: "b",
+          status: { confirmed: true, block_height: 102 },
+        });
       const txid = /\/tx\/(\w+)\/hex$/.exec(url)?.[1];
       if (txid) return new Response(`hex-${txid}`);
       throw new Error(`unexpected ${url}`);
@@ -186,12 +190,13 @@ describe("the wasm driver's interfaces", () => {
     await esplora.addressHistory("addr");
     listed = [
       { txid: "c", status: { confirmed: false } },
-      { txid: "b", status: { confirmed: false } },
+      { txid: "b", status: { confirmed: true, block_height: 102 } },
       ...listed,
     ];
 
     const history = await esplora.addressHistory("addr");
     const spend = await esplora.outspend("a", 0);
+    await esplora.addressHistory("addr");
 
     const bodies = fetchFn.mock.calls
       .map(([input]) => String(input))
@@ -200,9 +205,10 @@ describe("the wasm driver's interfaces", () => {
       "http://esplora.test/tx/a/hex",
       "http://esplora.test/tx/c/hex",
       "http://esplora.test/tx/b/hex",
+      "http://esplora.test/tx/c/hex",
     ]);
     expect(history.map((tx) => tx.hex)).toEqual(["hex-c", "hex-b", "hex-a"]);
-    expect(spend).toEqual({ hex: "hex-b", height: null });
+    expect(spend).toEqual({ hex: "hex-b", height: 102 });
   });
 });
 

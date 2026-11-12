@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.12.0]
+
+- **Breaking:** `with_chain` refuses a `min_confs` of 0.
+
+### Minor
+
+- `SwapNetwork::liquid_genesis_hash` and `SwapNetwork::liquid_policy_asset`
+  return Liquid's genesis hash and L-BTC on mainnet and testnet, and `None` on
+  regtest.
+- `LiquidEsplora` keeps a transaction body only once it is confirmed, and reads
+  an unconfirmed one again on every history read.
+
 ## [1.11.0]
 
 - **Breaking:** `PROTOCOL_VERSION` is the full version, and the driver accepts

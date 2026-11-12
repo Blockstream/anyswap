@@ -29,7 +29,9 @@ export interface HistoryTx {
  * asks again. Bound each request you make, such as `fetch` with
  * `AbortSignal.timeout`: the driver waits on a call for as long as it takes,
  * since a history read may need many requests, and it passes swaps one at a
- * time, each under its lock.
+ * time, each under its lock. Keep a body by txid only once it is confirmed: a
+ * txid leaves out the witness, so an unconfirmed body can differ from the one
+ * a block confirms.
  */
 export interface ChainClient {
   getHeight(): Promise<number>;

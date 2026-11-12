@@ -71,6 +71,27 @@ impl SwapNetwork {
             Self::Regtest => &elements::AddressParams::ELEMENTS,
         }
     }
+
+    /// The Liquid genesis hash every taproot sighash commits to. `None` on
+    /// regtest, whose genesis depends on `elementsd`'s chain parameters.
+    pub fn liquid_genesis_hash(self) -> Option<elements::BlockHash> {
+        let chain = match self {
+            Self::Mainnet => elements::genesis::ChainHash::LIQUIDV1,
+            Self::Testnet | Self::Signet => elements::genesis::ChainHash::LIQUIDTESTNET,
+            Self::Regtest => return None,
+        };
+        Some(elements::BlockHash::from_byte_array(*chain.as_ref()))
+    }
+
+    /// The Liquid policy asset, L-BTC. `None` on regtest, whose policy asset
+    /// depends on `elementsd`'s chain parameters.
+    pub fn liquid_policy_asset(self) -> Option<elements::AssetId> {
+        match self {
+            Self::Mainnet => Some(elements::AssetId::LIQUID_BTC),
+            Self::Testnet | Self::Signet => Some(elements::AssetId::LIQUIDTESTNET_BTC),
+            Self::Regtest => None,
+        }
+    }
 }
 
 impl From<bitcoin::Network> for SwapNetwork {

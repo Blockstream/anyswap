@@ -289,8 +289,8 @@ withChain(
 
 Registers a chain with its client, under the chain's default policy with
 `config` applied over it; a chain without one cannot be swapped on.
-Throws an `Invalid` [DriverError](#drivererror) for a `maxFeeRate` that is not
-finite and positive.
+Throws an `Invalid` [DriverError](#drivererror) for a `minConfs` of 0, or a
+`maxFeeRate` that is not finite and positive.
 
 ###### Parameters
 
@@ -845,7 +845,9 @@ Query and broadcast on one chain. A throw fails the pass, and the next pass
 asks again. Bound each request you make, such as `fetch` with
 `AbortSignal.timeout`: the driver waits on a call for as long as it takes,
 since a history read may need many requests, and it passes swaps one at a
-time, each under its lock.
+time, each under its lock. Keep a body by txid only once it is confirmed: a
+txid leaves out the witness, so an unconfirmed body can differ from the one
+a block confirms.
 
 #### Methods
 
@@ -953,7 +955,7 @@ a confirmation, since a timelock on an unconfirmed output has not started.
 | <a id="property-fundingtimeout"></a> `fundingTimeout?` | `number` | From creation, the most a swap with nothing on chain is given, in seconds. A swap-in asks the server to cancel at it, or at its claim invoice's expiry if sooner, and is refused unless the server waits this long and `minConfs + 1` blocks more and its claim invoice outlasts those blocks. A swap-out is refused when its hold invoice outlasts it. Defaults to 1200 on Bitcoin, 900 on Liquid. |
 | <a id="property-maxfeerate"></a> `maxFeeRate?` | `number` | The rate no spend goes above, in sat/vB, finite and positive. A swap-out holds its preimage while the estimate is above it. Defaults to 100 on Bitcoin, 1 on Liquid. |
 | <a id="property-maxrefundcsv"></a> `maxRefundCsv?` | `number` | The longest CSV accepted on a swap-in deposit. Defaults to 1008 on Bitcoin, 10080 on Liquid. |
-| <a id="property-minconfs"></a> `minConfs?` | `number` | The depth that releases a swap-out's preimage, and that a spend reaches before it closes a swap. Defaults to 3 on Bitcoin, 2 on Liquid. |
+| <a id="property-minconfs"></a> `minConfs?` | `number` | The depth that releases a swap-out's preimage, and that a spend reaches before it closes a swap, at least 1. Defaults to 3 on Bitcoin, 2 on Liquid. |
 
 ***
 

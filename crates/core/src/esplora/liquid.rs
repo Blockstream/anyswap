@@ -52,8 +52,10 @@ pub struct LiquidUtxo {
 pub struct LiquidEsplora {
     client: reqwest::Client,
     base_url: String,
-    /// Bodies already fetched, by txid. A body never changes under its txid,
-    /// so a history read fetches only what it has not seen. Clones share it.
+    /// Confirmed bodies already fetched, by txid. Liquid does not reorganize,
+    /// so a confirmed body never changes under its txid. An unconfirmed one
+    /// can: a txid leaves out the witness, so a block may confirm another body
+    /// under it. Clones share it.
     txs: Arc<Mutex<HashMap<Txid, Transaction>>>,
 }
 
@@ -268,33 +270,37 @@ impl LiquidEsplora {
     }
 
     /// Every transaction touching `address` with its confirmation height,
-    /// newest first, paged to the end. Bodies are fetched once and kept as
-    /// each arrives, so a read that fails partway leaves the next one less to
-    /// fetch; an entry whose body the explorer no longer serves is skipped.
+    /// newest first, paged to the end. A confirmed body is fetched once and
+    /// kept as it arrives, so a read that fails partway leaves the next one
+    /// less to fetch. An unconfirmed body is fetched on every read. An entry
+    /// whose body the explorer no longer serves is skipped.
     pub async fn address_txs(
         &self,
         address: &Address,
     ) -> Result<Vec<(Transaction, Option<u32>)>, EsploraError> {
         let history = self.history(address).await?;
-        let missing: Vec<Txid> = {
-            let txs = self.txs.lock().unwrap_or_else(PoisonError::into_inner);
-            history
-                .iter()
-                .map(|(txid, _)| *txid)
-                .filter(|txid| !txs.contains_key(txid))
-                .collect()
-        };
-        for txid in missing {
-            if let Some(tx) = self.get_tx(&txid).await? {
-                let mut txs = self.txs.lock().unwrap_or_else(PoisonError::into_inner);
-                txs.insert(txid, tx);
-            }
+        let mut found = Vec::with_capacity(history.len());
+        for (txid, height) in history {
+            let kept = height.and_then(|_| {
+                let txs = self.txs.lock().unwrap_or_else(PoisonError::into_inner);
+                txs.get(&txid).cloned()
+            });
+            let tx = match kept {
+                Some(tx) => tx,
+                None => {
+                    let Some(tx) = self.get_tx(&txid).await? else {
+                        continue;
+                    };
+                    if height.is_some() {
+                        let mut txs = self.txs.lock().unwrap_or_else(PoisonError::into_inner);
+                        txs.insert(txid, tx.clone());
+                    }
+                    tx
+                }
+            };
+            found.push((tx, height));
         }
-        let txs = self.txs.lock().unwrap_or_else(PoisonError::into_inner);
-        Ok(history
-            .into_iter()
-            .filter_map(|(txid, height)| txs.get(&txid).cloned().map(|tx| (tx, height)))
-            .collect())
+        Ok(found)
     }
 
     /// Txid and confirmation height of every transaction touching `address`,
