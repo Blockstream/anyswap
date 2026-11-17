@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.12.1]
+
+No changes.
+
 ## [1.12.0]
 
 - **Breaking:** `with_chain` refuses a `min_confs` of 0.

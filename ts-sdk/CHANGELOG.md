@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.12.1]
+
+No changes.
+
 ## [1.12.0]
 
 - **Breaking:** `withChain` throws for a `minConfs` of 0.
